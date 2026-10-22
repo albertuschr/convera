@@ -13,6 +13,7 @@ class Component extends DCLogic {
     test: 'idle', wa: 'cloud', methods: { api: true, manual: true, auto: false }, send: 'idle', pop: false, guide: false,
     page: 'overview', collapsed: null, menu: null, wsQuery: '', ws: 0, range: 2, read: false, more: false,
     banners: { wa: true, token: true, quota: true, trial: true },
+    profile: { name: 'Raka Santoso', email: 'raka@convera.id', phone: '+62 812-0000-0000' },
   };
   componentDidMount() { this.onR = () => this.setState({ width: window.innerWidth }); this.onR(); window.addEventListener('resize', this.onR); }
   componentWillUnmount() { window.removeEventListener('resize', this.onR); clearTimeout(this.t1); clearTimeout(this.t2); clearTimeout(this.tt); clearInterval(this.iv); }
@@ -647,7 +648,7 @@ class Component extends DCLogic {
       wsBtnStyle: { fontFamily: 'inherit', width: '100%', display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start', gap: 10, padding: collapsed ? 6 : '8px 10px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface2)', cursor: 'pointer' },
       openWs: menu('ws'), wsMenu: s.menu === 'ws', wsQuery: s.wsQuery, onWsQuery: (e) => this.setState({ wsQuery: e.target.value }), wsList, wsEmpty: wsList.length === 0,
       newWs: () => this.setState({ screen: 'onboarding', step: 0, menu: null, test: 'idle', send: 'idle' }), allWs: () => this.setState({ page: 'agency', menu: null }),
-      nav, menuOpen: !!s.menu, closeMenus: () => this.setState({ menu: null }),
+      nav, menuOpen: false, closeMenus: () => this.setState({ menu: null }),
       openDate: menu('date'), dateMenu: s.menu === 'date', dateLabel: PRE[s.range][0] + (W >= 1280 ? ' · ' + PRE[s.range][1] : ''), presets,
       openHealth: menu('health'), healthMenu: s.menu === 'health', goKoneksi: () => this.setState({ page: 'koneksi', menu: null }),
       openNotif: menu('notif'), notifMenu: s.menu === 'notif', notifs, unread: s.read ? 0 : 3, readAll: () => this.setState({ read: true }),

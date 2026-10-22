@@ -1,7 +1,8 @@
 // Pembuatan & pengiriman event ke Meta Conversions API (WhatsApp / business messaging).
 import { sha256Hex, uid } from './crypto.js';
 import { normPhone, isDatasetId, isToken } from './validators.js';
-export const LIVE = import.meta.env.VITE_LIVE_API === 'true'; // true = panggil Graph API sungguhan
+import { appConfig } from './config.js';
+export const LIVE = appConfig.liveMetaApi; // true = panggil Graph API sungguhan
 const GRAPH = 'https://graph.facebook.com/v19.0';
 const NEEDS_VALUE = ['Purchase', 'InitiateCheckout', 'AddToCart'];
 
