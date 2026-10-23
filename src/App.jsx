@@ -5,6 +5,7 @@ import defaults from './defaults.json';
 import { load, save, reset } from './services/storage.js';
 import ProfilePanel from './ProfilePanel.jsx';
 import { updateProfile } from './services/backend.js';
+// test
 
 // Host: owns the design's logic instance (state, timers, handlers) and renders the template with its values.
 export default class App extends React.Component {
