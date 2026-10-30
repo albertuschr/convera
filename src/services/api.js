@@ -6,6 +6,9 @@ function createError(message, status = 0) {
   return error;
 }
 
+let onUnauthorized = null;
+export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
+
 export async function requestJson(path, options = {}) {
   if (!appConfig.apiBaseUrl) throw createError('VITE_API_BASE_URL belum dikonfigurasi');
   const controller = new AbortController();
@@ -19,6 +22,7 @@ export async function requestJson(path, options = {}) {
       signal: controller.signal,
     });
     const data = await response.json().catch(() => null);
+    if (response.status === 401 && onUnauthorized) onUnauthorized();
     if (!response.ok) throw createError(data?.message || `Request gagal (${response.status})`, response.status);
     return data;
   } catch (error) {

@@ -54,7 +54,10 @@ Jangan menaruh access token Meta produksi di frontend. Untuk deployment nyata,
 pindahkan pengiriman Meta, webhook, autentikasi, scheduler, dan pembayaran ke
 backend.
 
-## Persiapan integrasi backend
+## Backend (server/)
+Folder `server/` berisi backend Fastify + TypeScript + PostgreSQL: autentikasi/sesi/role, penyimpanan terenkripsi token Meta & secret webhook, tes koneksi/webhook, dan pengiriman event dari sisi server. Petunjuk menjalankan, daftar endpoint, dan catatan keamanan ada di `server/README.md`. Dengan `VITE_BACKEND_ENABLED=true`, frontend memakai server (login diperlukan) dan tidak lagi menyimpan token/secret di localStorage; dengan `false`, aplikasi tetap berjalan dalam mode demo.
+
+Persiapan integrasi backend
 
 Frontend sudah dipisahkan menjadi beberapa lapisan agar backend dapat
 ditambahkan tanpa mengubah komponen UI:

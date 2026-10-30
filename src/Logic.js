@@ -2,7 +2,7 @@ import React from 'react';
 import { DCLogic } from './dc.jsx';
 import { printReport, downloadCsv, downloadJson, printInvoice } from './services/exporter.js';
 import { buildEvent, sendEvent, testConnection } from './services/capi.js';
-import { testWebhook } from './services/webhook.js';
+import { testWebhook, saveWebhook } from './services/webhook.js';
 import { randomToken, uid } from './services/crypto.js';
 import { parseRecipients, checkPassword, isHttps, normPhone } from './services/validators.js';
 
@@ -430,7 +430,7 @@ class Component extends DCLogic {
       whEv: [['sent', 'event.sent'], ['failed', 'event.failed'], ['lead', 'lead.created'], ['quota', 'quota.warning']].map(([k, label]) => ({ label, pick: () => set({ whEv: { ...whE, [k]: !whE[k] } }), style: { ...chip(whE[k]), height: 30, fontSize: 12, fontFamily: "'JetBrains Mono',monospace" } })),
       secretMask: (s.whSecret || 'whsec_5Tq9xVb').slice(0, 9) + '…' + (s.whSecret || 'whsec_5Tq9xVb').slice(-4),
       testWh: async () => { const url = s.wh ?? 'https://n8n.kopisenja.id/webhook/convera'; say('Mengirim webhook tes…', url.replace('https://', '').split('/')[0]); let secret = s.whSecret; if (!secret) { secret = 'whsec_' + randomToken(24); set({ whSecret: secret }); } const r = await testWebhook(url, secret); say(r.ok ? 'Webhook tes terkirim' : 'Webhook gagal', r.ok ? 'HTTP ' + r.status : r.error); },
-      saveWh: () => { const url = (s.wh ?? 'https://n8n.kopisenja.id/webhook/convera').trim(); if (!isHttps(url)) { say('URL webhook tidak valid', 'Harus diawali https://'); return; } if (!s.whSecret) set({ whSecret: 'whsec_' + randomToken(24) }); say('Webhook disimpan', url.replace('https://', '').split('/')[0]); } };
+      saveWh: () => { const url = (s.wh ?? 'https://n8n.kopisenja.id/webhook/convera').trim(); if (!isHttps(url)) { say('URL webhook tidak valid', 'Harus diawali https://'); return; } const srv = saveWebhook(url, s.whEv); if (srv) { srv.then((r) => { if (r.secret) set({ whSecret: r.secret }); say('Webhook disimpan', url.replace('https://', '').split('/')[0]); }).catch((e) => say('Webhook gagal disimpan', e.message)); return; } if (!s.whSecret) set({ whSecret: 'whsec_' + randomToken(24) }); say('Webhook disimpan', url.replace('https://', '').split('/')[0]); } };
     const kmS = s.keyModal;
     const newKey = 'cvr_' + (sbox ? 'test' : 'live') + '_' + clidOf(keys.length + 7).slice(2, 26);
     const km = kmS ? { open: true, ask: kmS.step === 'ask', show: kmS.step === 'show', label: kmS.label, setLabel: (e) => set({ keyModal: { ...kmS, label: e.target.value } }), close: () => set({ keyModal: null }),
@@ -609,7 +609,9 @@ class Component extends DCLogic {
     const nav = NAV.filter(([id]) => id !== 'agency').map(([id, l, i, b, g]) => navItem(id, l, i, b, g));
     const sidebarStyle = { width: collapsed ? 76 : 264, flex: 'none', position: 'sticky', top: 0, height: '100vh', display: 'flex', flexDirection: 'column', gap: 16, padding: collapsed ? '18px 12px' : '18px 14px', background: 'var(--surface)', borderRight: '1px solid var(--border)', transition: 'width .2s', zIndex: 32 };
     const WS = [['Kopi Senja', 'F&B · Jakarta'], ['Klinik Gigi Senyum', 'Klinik · Bandung'], ['Rumah Pijat Sehati', 'Jasa · Surabaya'], ['Laundry Kilat Bersih', 'Jasa · Depok'], ['Bimbel Cerdas Mandiri', 'Pendidikan · Medan'], ['Toko Hijab Amira', 'Fashion · Yogyakarta']];
-    WS[0][0] = s.f.biz || 'Kopi Senja';
+    WS[0][0] = s.account?.wsName || s.f.biz || 'Kopi Senja';
+    const me = s.profile || {}, ROLE = { owner: 'Owner', cs: 'CS', agency: 'Agency' }[s.account?.role];
+    const userName = me.name || me.email || 'Akun saya';
     const q = s.wsQuery.trim().toLowerCase();
     const wsList = WS.map(([name, meta], i) => ({ name, meta, i })).filter((w) => !q || w.name.toLowerCase().includes(q)).map((w) => ({ name: w.name, meta: w.meta, active: w.i === s.ws, ini: w.name.split(' ').map((x) => x[0]).join('').slice(0, 2).toUpperCase(),
       pick: () => this.setState({ ws: w.i, menu: null, more: false, wsQuery: '' }),
@@ -641,6 +643,7 @@ class Component extends DCLogic {
     const moreNav = NAV.filter(([id]) => !['overview', 'leads', 'konversi'].includes(id)).map(([id, label, i, badge]) => ({ label, badge, icon: ic[i], go: () => this.setState({ page: id, more: false }),
       style: { fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 10, height: 48, padding: '0 12px', borderRadius: 10, border: '1px solid var(--border)', background: s.page === id ? 'var(--accentSoft)' : 'var(--surface)', color: 'var(--text)', fontSize: 13, fontWeight: 600, cursor: 'pointer' } }));
     const app = {
+      userName, userSub: [me.email, ROLE].filter(Boolean).join(' · '), userIni: userName.split(/\s+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase(),
       mobile, notMobile: !mobile, wideTop: W >= 1180, showSidebar: !mobile, expanded, collapsedQuota: collapsed, sidebarStyle,
       sbHeadStyle: { display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'space-between', flexDirection: collapsed ? 'column' : 'row', gap: 10, padding: collapsed ? 0 : '2px 4px 2px 6px' },
       toggleCollapse: () => this.setState({ collapsed: !collapsed }),

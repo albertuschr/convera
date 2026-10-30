@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { isEmail, isPhone, checkPassword } from './services/validators.js';
+import { appConfig } from './services/config.js';
 
 const fieldStyle = {
   width: '100%',
@@ -29,7 +30,7 @@ export default function ProfilePanel({ profile, themeStyle, onSave, onClose }) {
     if (!form.name.trim()) return setError('Nama wajib diisi');
     if (!isEmail(form.email)) return setError('Format email tidak valid');
     if (form.phone && !isPhone(form.phone)) return setError('Nomor telepon tidak valid');
-    if (passwords.current || passwords.next || passwords.again) {
+    if (passwords.next || passwords.again) {
       const passwordError = checkPassword(passwords.current, passwords.next, passwords.again);
       if (passwordError) return setError(passwordError);
     }
@@ -39,7 +40,10 @@ export default function ProfilePanel({ profile, themeStyle, onSave, onClose }) {
         name: form.name.trim(),
         email: form.email.trim().toLowerCase(),
         phone: form.phone.trim(),
-        ...(passwords.next ? { passwordUpdatedAt: new Date().toISOString() } : {}),
+        // Password dikirim hanya ke server (mode backend); tidak pernah disimpan di browser.
+        ...(passwords.current ? { currentPassword: passwords.current } : {}),
+        ...(passwords.next ? { newPassword: passwords.next } : {}),
+        ...(passwords.next && !appConfig.backendEnabled ? { passwordUpdatedAt: new Date().toISOString() } : {}),
       });
     } catch (saveError) {
       setSaving(false);
@@ -58,7 +62,7 @@ export default function ProfilePanel({ profile, themeStyle, onSave, onClose }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 26 }}>
           <div>
             <h2 id="profile-title" style={{ margin: 0, fontSize: 20 }}>Profil saya</h2>
-            <p style={{ margin: '6px 0 0', color: 'var(--muted)', fontSize: 13 }}>Data profil tersimpan di browser ini.</p>
+            <p style={{ margin: '6px 0 0', color: 'var(--muted)', fontSize: 13 }}>{appConfig.backendEnabled ? 'Data profil tersimpan di akun Anda.' : 'Data profil tersimpan di browser ini.'}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Tutup profil" style={{ border: 0, background: 'var(--surface2)', color: 'var(--text)', borderRadius: 8, width: 34, height: 34, cursor: 'pointer', fontSize: 20 }}>×</button>
         </div>

@@ -2,6 +2,7 @@
 import { sha256Hex, uid } from './crypto.js';
 import { normPhone, isDatasetId, isToken } from './validators.js';
 import { appConfig } from './config.js';
+import { metaTest, metaSave, metaSendEvent } from './backend.js';
 export const LIVE = appConfig.liveMetaApi; // true = panggil Graph API sungguhan
 const GRAPH = 'https://graph.facebook.com/v19.0';
 const NEEDS_VALUE = ['Purchase', 'InitiateCheckout', 'AddToCart'];
@@ -23,6 +24,8 @@ export function validateEvent(payload) {
   if (NEEDS_VALUE.includes(e.event_name) && !(e.custom_data?.value > 0)) errs.push('value wajib untuk ' + e.event_name);
   return errs;
 }
+// Token contoh bawaan state awal Logic.js: jangan pernah dikirim ke server.
+const SAMPLE_TOKEN = 'EAAGm0PX4ZCpsBAJ8xZq2LmNvT7';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function graph(path, opt, token, ms = 9000) {
   const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
@@ -32,11 +35,27 @@ async function graph(path, opt, token, ms = 9000) {
 }
 export async function sendEvent(payload, { datasetId, token } = {}) {
   const errs = validateEvent(payload); if (errs.length) return { ok: false, status: 400, error: errs.join('; ') };
+  // Mode backend: server memakai token tersimpan; browser tidak mengirim token sama sekali.
+  if (appConfig.backendEnabled) { try { return await metaSendEvent(payload); } catch (e) { return { ok: false, status: e.status || 0, error: e.message }; } }
   if (!LIVE) { await wait(700); return { ok: true, status: 200, demo: true, events_received: 1 }; }
   const r = await graph(`/${datasetId}/events`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, token);
   return r.ok ? { ok: true, status: r.status, ...r.body } : { ok: false, status: r.status, error: r.body?.error?.message || 'Gagal', code: r.body?.error?.code };
 }
+// Mode backend: tes dijalankan di server. Jika pengguna mengetik token baru, token itu diuji lalu disimpan terenkripsi di server;
+// jika tidak, server menguji kredensial yang sudah tersimpan.
+async function backendTestConnection({ datasetId, token }) {
+  const typed = isToken(token) && String(token).trim() !== SAMPLE_TOKEN;
+  try {
+    if (!typed) return await metaTest({});
+    if (!isDatasetId(datasetId)) return { ok: false, code: 100, error: 'Dataset ID harus 15–16 digit angka' };
+    const creds = { datasetId: String(datasetId).trim(), accessToken: String(token).trim() };
+    const r = await metaTest(creds);
+    if (r.ok) await metaSave(creds);
+    return r;
+  } catch (e) { return { ok: false, error: e.message }; }
+}
 export async function testConnection({ datasetId, token }) {
+  if (appConfig.backendEnabled) return backendTestConnection({ datasetId, token });
   if (!isDatasetId(datasetId)) return { ok: false, code: 100, error: 'Dataset ID harus 15–16 digit angka' };
   if (!isToken(token)) return { ok: false, code: 190, error: 'Access token tidak valid atau terlalu pendek' };
   if (!LIVE) { await wait(900); return { ok: true, demo: true }; }
