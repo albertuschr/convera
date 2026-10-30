@@ -1,0 +1,14 @@
+# Postgres lokal untuk development:  docker compose up -d
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: convera
+      POSTGRES_PASSWORD: convera
+      POSTGRES_DB: convera
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - convera_pg:/var/lib/postgresql/data
+volumes:
+  convera_pg:
