@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file=.env dist/index.js",
     "migrate": "tsx --env-file=.env src/migrate.ts",
+    "seed": "tsx --env-file=.env src/seed.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test test/*.test.ts",
     "gen:key": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",

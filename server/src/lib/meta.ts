@@ -21,3 +21,10 @@ export function metaClient(fetchImpl: typeof fetch, version: string) {
   };
 }
 export type MetaClient = ReturnType<typeof metaClient>;
+
+/** Klien palsu untuk development tanpa akses Meta (META_MOCK=true): tidak ada request keluar, semua dianggap diterima. */
+export function mockMetaClient(): MetaClient {
+  return async (path: string) => path.endsWith('/events')
+    ? { ok: true, status: 200, body: { events_received: 1, fbtrace_id: 'mock', mock: true } }
+    : { ok: true, status: 200, body: { id: path.split(/[/?]/)[1], name: 'Dataset (mock)' } };
+}

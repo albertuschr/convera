@@ -9,13 +9,15 @@ import type { Db } from './db.js';
 import { HttpError, notFound } from './lib/http.js';
 import { randomToken, sha256 } from './lib/crypto.js';
 import { safePost, type SafePost } from './lib/ssrf.js';
-import { metaClient, type MetaClient } from './lib/meta.js';
+import { metaClient, mockMetaClient, type MetaClient } from './lib/meta.js';
 import type { Role } from './lib/schemas.js';
 import authRoutes from './routes/auth.js';
 import meRoutes from './routes/me.js';
 import workspaceRoutes from './routes/workspaces.js';
 import integrationRoutes from './routes/integrations.js';
 import apiKeyRoutes from './routes/apikeys.js';
+import leadRoutes from './routes/leads.js';
+import eventRoutes from './routes/events.js';
 
 export interface Deps { fetch: typeof fetch; safePost: SafePost }
 
@@ -51,7 +53,7 @@ export async function buildApp(cfg: Config, db: Db, deps: Partial<Deps> = {}) {
   app.decorate('cfg', cfg);
   app.decorate('db', db);
   app.decorate('deps', d);
-  app.decorate('meta', metaClient(d.fetch, cfg.metaGraphVersion));
+  app.decorate('meta', cfg.metaMock ? mockMetaClient() : metaClient(d.fetch, cfg.metaGraphVersion));
   app.decorate('cookieName', cookieName);
   app.decorateRequest('auth', null);
 
@@ -144,5 +146,7 @@ export async function buildApp(cfg: Config, db: Db, deps: Partial<Deps> = {}) {
   await app.register(workspaceRoutes, { prefix: '/api/v1' });
   await app.register(integrationRoutes, { prefix: '/api/v1' });
   await app.register(apiKeyRoutes, { prefix: '/api/v1' });
+  await app.register(leadRoutes, { prefix: '/api/v1' });
+  await app.register(eventRoutes, { prefix: '/api/v1' });
   return app;
 }

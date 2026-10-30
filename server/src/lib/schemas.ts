@@ -8,7 +8,7 @@ export const password = z
   .refine((p) => /[A-Za-z]/.test(p) && /\d/.test(p), 'Gunakan kombinasi huruf dan angka');
 export const name = z.string().trim().min(1, 'Nama wajib diisi').max(120);
 
-const normPhone = (p: string) => { let d = p.replace(/\D/g, ''); if (d.startsWith('0')) d = '62' + d.slice(1); else if (d.startsWith('8')) d = '62' + d; return d; };
+export const normPhone =(p: string) => { let d = p.replace(/\D/g, ''); if (d.startsWith('0')) d = '62' + d.slice(1); else if (d.startsWith('8')) d = '62' + d; return d; };
 export const phone = z.string().trim().max(32).refine((p) => p === '' || /^62\d{8,13}$/.test(normPhone(p)), 'Nomor telepon tidak valid');
 
 export const uuid = z.string().uuid();

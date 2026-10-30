@@ -1,6 +1,6 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '../src/config.js';
 import { createPool, type Db } from '../src/db.js';
@@ -15,6 +15,7 @@ if (!/test/.test(new URL(DB_URL).pathname)) throw new Error('TEST_DATABASE_URL h
 const ORIGIN = 'http://localhost:5173';
 const TOKEN = 'EAAGm0PX4ZCpsBO' + 'x'.repeat(40);
 const hex64 = (c: string) => c.repeat(64);
+const createHashHex = (s: string) => createHash('sha256').update(s).digest('hex');
 
 let app: FastifyInstance, db: Db;
 let ipN = 0;
@@ -246,7 +247,7 @@ describe('item 5: token Meta & secret webhook hanya di server', () => {
     const r = await call('POST', `/api/v1/workspaces/${o.wsId}/integrations/meta/test`, { cookie: cs.cookie, body: {} });
     assert.equal(r.status, 200); assert.equal(r.json.data.ok, true); assert.equal(r.json.data.name, 'Dataset Uji');
     const c = graphCalls[0]!;
-    assert.ok(c.url.startsWith('https://graph.facebook.com/v19.0/123456789012345'));
+    assert.ok(c.url.startsWith('https://graph.facebook.com/v26.0/123456789012345'));
     assert.ok(!c.url.includes(TOKEN), 'token tidak boleh ada di URL');
     assert.equal((c.init.headers as Record<string, string>).Authorization, `Bearer ${TOKEN}`);
     graphReply = () => ({ status: 400, body: { error: { code: 190, message: 'Invalid OAuth access token' } } });
@@ -327,6 +328,126 @@ describe('API key', () => {
     assert.equal((await db.query('SELECT count(*)::int n FROM api_keys WHERE encode(key_hash,\'hex\') = $1', [key])).rows[0].n, 0);
     assert.equal((await call('DELETE', `/api/v1/workspaces/${o.wsId}/api-keys/${c.json.data.id}`, { cookie: o.cookie })).status, 200);
     assert.equal((await call('DELETE', `/api/v1/workspaces/${o.wsId}/api-keys/${c.json.data.id}`, { cookie: o.cookie })).status, 404);
+  });
+});
+
+describe('fase 1: leads, event, dashboard', () => {
+  let o: Awaited<ReturnType<typeof register>>, ag: Awaited<ReturnType<typeof register>>;
+  const base = () => `/api/v1/workspaces/${o.wsId}`;
+  const clickedAt = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+  const lead = async (phone: string, extra: Record<string, unknown> = {}) => {
+    const r = await call('POST', `${base()}/leads`, { cookie: o.cookie, body: { name: 'Pelanggan ' + phone, phone, firstMessage: 'Halo kak', ctwaClid: 'ARclid' + phone, campaign: 'Promo', adSet: 'Jaksel', ad: 'Iklan A', clickedAt: clickedAt(1), ...extra } });
+    assert.equal(r.status, 201, JSON.stringify(r.json));
+    return r.json.data as { id: string; phone: string };
+  };
+  before(async () => {
+    o = await register('f1-owner@example.com');
+    ag = await register('f1-agency@example.com');
+    await call('POST', `${base()}/members`, { cookie: o.cookie, body: { email: 'f1-agency@example.com', role: 'agency' } });
+    await call('PUT', `${base()}/integrations/meta`, { cookie: o.cookie, body: { datasetId: '123456789012345', accessToken: TOKEN } });
+  });
+
+  it('lead: buat, validasi, filter, nomor disamarkan untuk agency, terisolasi antar workspace', async () => {
+    const a = await lead('081234567001');
+    assert.equal(a.phone, '6281234567001'); // dinormalisasi
+    assert.equal((await call('POST', `${base()}/leads`, { cookie: o.cookie, body: { phone: '0812-3456-7001' } })).status, 409);
+    assert.equal((await call('POST', `${base()}/leads`, { cookie: o.cookie, body: { phone: 'abc' } })).status, 422);
+    assert.equal((await call('POST', `${base()}/leads`, { cookie: ag.cookie, body: { phone: '081234567099' } })).status, 403);
+    await lead('081234567002', { ctwaClid: undefined, campaign: undefined, adSet: undefined, ad: undefined });
+    const all = await call('GET', `${base()}/leads`, { cookie: o.cookie });
+    assert.equal(all.json.data.length, 2);
+    assert.equal((await call('GET', `${base()}/leads?campaign=__organic`, { cookie: o.cookie })).json.data.length, 1);
+    assert.equal((await call('GET', `${base()}/leads?q=7001`, { cookie: o.cookie })).json.data.length, 1);
+    const asAgency = await call('GET', `${base()}/leads`, { cookie: ag.cookie });
+    assert.ok(asAgency.json.data.every((l: { phone: string }) => l.phone.includes('•••')));
+    assert.equal((await call('GET', `/api/v1/workspaces/${ag.wsId}/leads/${a.id}`, { cookie: ag.cookie })).status, 404);
+  });
+
+  it('tandai Purchase: nomor di-hash di server, status lead naik, event tercatat dengan riwayat; klik ganda tidak dobel', async () => {
+    const a = await lead('081234567010');
+    graphCalls.length = 0;
+    const r = await call('POST', `${base()}/leads/${a.id}/events`, { cookie: o.cookie, body: { eventName: 'Purchase', value: 250000, eventId: 'klik-1' } });
+    assert.equal(r.status, 201, JSON.stringify(r.json)); assert.equal(r.json.data.ok, true); assert.equal(r.json.data.leadStatus, 'purchase');
+    const sent = String(graphCalls[0]!.init.body);
+    assert.ok(!sent.includes('6281234567010') && sent.includes(createHashHex('6281234567010')));
+    assert.equal((await call('POST', `${base()}/leads/${a.id}/events`, { cookie: o.cookie, body: { eventName: 'Purchase', value: 250000, eventId: 'klik-1' } })).json.data.duplicate, true);
+    assert.equal(graphCalls.length, 1);
+    assert.equal((await call('POST', `${base()}/leads/${a.id}/events`, { cookie: o.cookie, body: { eventName: 'Purchase', value: 0 } })).status, 422);
+    // event dengan status lebih rendah tidak menurunkan status lead
+    assert.equal((await call('POST', `${base()}/leads/${a.id}/events`, { cookie: o.cookie, body: { eventName: 'ViewContent' } })).json.data.leadStatus, 'purchase');
+    const d = await call('GET', `${base()}/leads/${a.id}`, { cookie: o.cookie });
+    assert.deepEqual([d.json.data.status, d.json.data.value, d.json.data.events.length], ['purchase', 250000, 2]);
+    const list = await call('GET', `${base()}/events?source=manual`, { cookie: o.cookie });
+    const ev = list.json.data.find((e: { eventId: string }) => e.eventId === 'klik-1');
+    assert.equal(ev.status, 'sent'); assert.equal(ev.by, 'User f1-owner@example.com');
+    const det = await call('GET', `${base()}/events/${ev.id}`, { cookie: o.cookie });
+    assert.equal(det.json.data.history.length, 1); assert.equal(det.json.data.payload.data[0].event_id, 'klik-1');
+  });
+
+  it('organik ditolak; lewat 7 hari dicatat expired tanpa dikirim; gagal bisa dikirim ulang', async () => {
+    const org = await lead('081234567020', { ctwaClid: undefined });
+    assert.equal((await call('POST', `${base()}/leads/${org.id}/events`, { cookie: o.cookie, body: { eventName: 'LeadSubmitted' } })).status, 422);
+    const old = await lead('081234567021', { clickedAt: clickedAt(8) });
+    graphCalls.length = 0;
+    const ex = await call('POST', `${base()}/leads/${old.id}/events`, { cookie: o.cookie, body: { eventName: 'Purchase', value: 1000 } });
+    assert.equal(ex.json.data.expired, true); assert.equal(graphCalls.length, 0);
+    assert.equal((await call('GET', `${base()}/events?status=expired`, { cookie: o.cookie })).json.data.length, 1);
+
+    const b = await lead('081234567022');
+    graphReply = () => ({ status: 400, body: { error: { code: 100, message: 'Invalid parameter' } } });
+    const f = await call('POST', `${base()}/leads/${b.id}/events`, { cookie: o.cookie, body: { eventName: 'LeadSubmitted' } });
+    assert.deepEqual([f.json.data.ok, f.json.data.code], [false, 100]);
+    graphReply = () => ({ status: 200, body: { events_received: 1 } });
+    const rowId = f.json.data.eventRowId;
+    assert.equal((await call('POST', `${base()}/events/${rowId}/resend`, { cookie: ag.cookie })).status, 403);
+    const re = await call('POST', `${base()}/events/${rowId}/resend`, { cookie: o.cookie });
+    assert.equal(re.json.data.ok, true);
+    assert.equal((await call('POST', `${base()}/events/${rowId}/resend`, { cookie: o.cookie })).status, 409); // sudah terkirim
+    const det = await call('GET', `${base()}/events/${rowId}`, { cookie: o.cookie });
+    assert.deepEqual([det.json.data.status, det.json.data.attempts, det.json.data.history.length], ['sent', 2, 2]);
+  });
+
+  it('Meta belum terhubung: event dicatat gagal dengan alasan jelas', async () => {
+    const x = await register('f1-nometa@example.com');
+    const l = (await call('POST', `/api/v1/workspaces/${x.wsId}/leads`, { cookie: x.cookie, body: { phone: '081234567030', ctwaClid: 'ARx', clickedAt: clickedAt(1) } })).json.data;
+    const r = await call('POST', `/api/v1/workspaces/${x.wsId}/leads/${l.id}/events`, { cookie: x.cookie, body: { eventName: 'LeadSubmitted' } });
+    assert.deepEqual([r.json.data.ok, r.json.data.error], [false, 'Meta belum terhubung']);
+  });
+
+  it('bulk status, hapus lead, dan hapus kontak (beserta event-nya)', async () => {
+    const a = await lead('081234567040'), b = await lead('081234567041');
+    assert.equal((await call('POST', `${base()}/leads/bulk-status`, { cookie: o.cookie, body: { ids: [a.id, b.id], status: 'lost' } })).json.data.updated, 2);
+    assert.equal((await call('DELETE', `${base()}/leads/${a.id}`, { cookie: o.cookie })).status, 200);
+    assert.equal((await call('GET', `${base()}/leads/${a.id}`, { cookie: o.cookie })).status, 404);
+    await call('POST', `${base()}/leads/${b.id}/events`, { cookie: o.cookie, body: { eventName: 'LeadSubmitted' } });
+    assert.equal((await call('POST', `${base()}/contacts/forget`, { cookie: o.cookie, body: { phone: '0812 3456 7041' } })).json.data.deleted, 1);
+    assert.equal((await db.query('SELECT count(*)::int n FROM events e JOIN leads l ON l.id = e.lead_id WHERE l.phone = $1', ['6281234567041'])).rows[0].n, 0);
+    const logs = await call('GET', `${base()}/audit-logs`, { cookie: o.cookie });
+    assert.ok(!JSON.stringify(logs.json).includes('6281234567041'));
+  });
+
+  it('dashboard: KPI, harian, dan performa per iklan dari data asli', async () => {
+    const x = await register('f1-dash@example.com');
+    const b = `/api/v1/workspaces/${x.wsId}`;
+    await call('PUT', `${b}/integrations/meta`, { cookie: x.cookie, body: { datasetId: '123456789012345', accessToken: TOKEN } });
+    const mk = async (phone: string) => (await call('POST', `${b}/leads`, { cookie: x.cookie, body: { phone, ctwaClid: 'AR' + phone, campaign: 'Promo', adSet: 'Jaksel', ad: 'Iklan A', clickedAt: clickedAt(0) } })).json.data;
+    const l1 = await mk('081234567050'); await mk('081234567051');
+    await call('POST', `${b}/leads/${l1.id}/events`, { cookie: x.cookie, body: { eventName: 'Purchase', value: 300000 } });
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+    await db.query("INSERT INTO ad_insights (workspace_id, date, campaign, ad_set, ad, spend, clicks) VALUES ($1,$2,'Promo','Jaksel','Iklan A',100000,40)", [x.wsId, today]);
+    const from = new Date(Date.now() - 6 * 86_400_000).toISOString(), to = new Date(Date.now() + 86_400_000).toISOString();
+    const r = await call('GET', `${b}/dashboard?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { cookie: x.cookie });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const c = r.json.data.current;
+    assert.deepEqual([c.chats, c.purchases, c.value, c.spend, c.clicks, c.with_clid], [2, 1, 300000, 100000, 40, 2]);
+    assert.deepEqual(r.json.data.ads, [{ campaign: 'Promo', adSet: 'Jaksel', ad: 'Iklan A', spend: 100000, clicks: 40, chats: 2, leads: 1, purchases: 1, value: 300000 }]);
+    assert.ok(r.json.data.daily.length >= 7);
+    assert.equal(r.json.data.meta.connected, true);
+    assert.equal((await call('GET', `${b}/dashboard?from=${encodeURIComponent(to)}&to=${encodeURIComponent(from)}`, { cookie: x.cookie })).status, 422);
+  });
+
+  it('META_MOCK ditolak di production', () => {
+    assert.throws(() => loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'x', ENCRYPTION_KEY: randomBytes(32).toString('base64'), META_MOCK: 'true' } as NodeJS.ProcessEnv), /META_MOCK/);
   });
 });
 

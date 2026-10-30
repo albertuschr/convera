@@ -15,8 +15,10 @@ const schema = z.object({
   SESSION_IDLE_DAYS: z.coerce.number().int().positive().default(7),
   REGISTRATION_OPEN: bool.default('true'),
   TRUST_PROXY: bool.default('false'),
-  META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/, 'Contoh: v19.0').default('v19.0'),
-});
+  META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/, 'Contoh: v26.0').default('v26.0'),
+  // Khusus development tanpa akses Meta: event dianggap diterima tanpa memanggil graph.facebook.com.
+  META_MOCK: bool.default('false'),
+}).refine((e) => !(e.META_MOCK && e.NODE_ENV === 'production'), { message: 'META_MOCK tidak boleh aktif di production', path: ['META_MOCK'] });
 
 export type Config = ReturnType<typeof loadConfig>;
 
@@ -40,5 +42,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     registrationOpen: e.REGISTRATION_OPEN,
     trustProxy: e.TRUST_PROXY,
     metaGraphVersion: e.META_GRAPH_VERSION,
+    metaMock: e.META_MOCK,
   };
 }

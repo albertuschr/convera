@@ -11,6 +11,7 @@ npm install
 npm run gen:key                 # tempel hasilnya ke ENCRYPTION_KEY di .env
 docker compose up -d            # Postgres lokal (atau pakai Postgres sendiri)
 npm run migrate
+npm run seed -- email@anda.com   # opsional: isi workspace dengan data demo 30 hari (--reset untuk mengulang)
 npm run dev                     # http://localhost:3000
 ```
 
@@ -42,6 +43,14 @@ Production: `npm run build`, `npm run migrate:prod`, `npm start`. Simpan `ENCRYP
 | POST | `.../integrations/webhook/test` | owner, cs | Kirim webhook tes bertanda tangan HMAC |
 | GET/POST/DELETE | `.../api-keys` | owner | API key (hanya hash tersimpan; key tampil sekali) |
 | GET | `.../audit-logs` | owner | 100 aksi terakhir |
+| GET/POST | `/api/v1/workspaces/:id/leads` | anggota / owner, cs | Daftar (filter `q`, `status`, `campaign`) & tambah lead. Nomor disamarkan untuk agency |
+| GET/PATCH/DELETE | `.../leads/:leadId` | anggota / owner, cs | Detail + riwayat event, ubah status/nilai, hapus |
+| POST | `.../leads/bulk-status` | owner, cs | Ubah status banyak lead sekaligus |
+| POST | `.../leads/:leadId/events` | owner, cs | Tandai konversi: server menyusun payload CAPI, meng-hash nomor, mencatat, mengirim ke Meta |
+| GET | `.../events` · `.../events/:eventId` | anggota | Log event (filter `status`, `source`, `from`, `to`); detail berisi payload, respons Meta, riwayat kirim |
+| POST | `.../events/:eventId/resend` | owner, cs | Kirim ulang event gagal (event_id sama; lewat 7 hari → kedaluwarsa) |
+| GET | `.../dashboard?from&to` | anggota | KPI periode ini & sebelumnya, grafik harian, performa per iklan |
+| POST | `.../contacts/forget` | owner | Hapus permanen lead + event untuk satu nomor |
 
 Role: **owner** penuh · **cs** kelola lead/event dan menjalankan tes · **agency** hanya lihat. Bukan anggota workspace → `404` (tidak membocorkan keberadaan).
 
@@ -57,8 +66,9 @@ Role: **owner** penuh · **cs** kelola lead/event dan menjalankan tes · **agenc
 
 ## Belum dikerjakan (sengaja)
 
-- Tabel `leads`, `events`, `rules` sudah ada di skema, tetapi endpoint CRUD-nya belum (dashboard masih memakai data sampel).
+- Lead belum masuk otomatis dari WhatsApp (Fase 2); saat ini lewat `POST .../leads` atau seed. Spend & klik iklan (`ad_insights`) belum disinkronkan dari Ad Account.
+- Tanpa akses Meta, set `META_MOCK=true` di `.env` (development saja) agar alur tandai konversi bisa dicoba.
 - Event yang gagal belum di-retry otomatis (butuh worker queue). Saat ini kirim ulang = kirim ulang manual dengan `event_id` yang sama.
 - Autentikasi API key untuk endpoint ingest (key sudah bisa dibuat/dicabut, belum dipakai untuk autentikasi).
 - Reset password / verifikasi email / undangan via email (butuh provider email), 2FA, dan penguncian akun setelah banyak percobaan gagal.
-- Versi Graph API default `v19.0` (mengikuti kode frontend lama) → cek versi yang masih didukung Meta lalu ubah `META_GRAPH_VERSION`.
+- Versi Graph API default `v26.0` (rilis 29 Jul 2026). Meta mendukung tiap versi ±2 tahun; cek https://developers.facebook.com/docs/graph-api/changelog/versions secara berkala lalu ubah `META_GRAPH_VERSION`.

@@ -5,9 +5,9 @@ import { decrypt, encrypt, hmacSha256Hex, maskSecret, randomToken } from '../lib
 import { assertWebhookUrl } from '../lib/ssrf.js';
 import { audit } from '../lib/audit.js';
 import * as v from '../lib/schemas.js';
+import { NEEDS_VALUE, addAttempt, deliver, metaTarget } from '../lib/events.js';
 
 const idParam = z.object({ id: v.uuid });
-const NEEDS_VALUE = ['Purchase', 'InitiateCheckout', 'AddToCart'];
 
 interface IntegrationRow {
   meta_dataset_id: string | null; meta_token_enc: string | null; meta_token_saved_at: Date | null;
@@ -106,25 +106,25 @@ export default async function integrationRoutes(app: FastifyInstance) {
     if (e.event_time > Date.now() / 1000 + 3600) throw new HttpError(422, 'event_time berada di masa depan');
     if (NEEDS_VALUE.includes(e.event_name) && !((e.custom_data?.value ?? 0) > 0)) throw new HttpError(422, `value wajib untuk ${e.event_name}`);
 
-    const row = await load(id);
-    const token = metaToken(id, row);
-    if (!row?.meta_dataset_id || !token) throw new HttpError(409, 'Meta belum terhubung');
+    const target = await metaTarget(app, id);
+    if (!target) throw new HttpError(409, 'Meta belum terhubung');
 
     const up = await db.query<{ id: string }>(
-      `INSERT INTO events (workspace_id, event_id, event_name, value, currency, source, status, payload, attempts)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,1)
+      `INSERT INTO events (workspace_id, event_id, event_name, value, currency, source, status, payload, attempts, created_by, event_time)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,1,$8, to_timestamp($9))
        ON CONFLICT (workspace_id, event_id) DO UPDATE SET attempts = events.attempts + 1, payload = EXCLUDED.payload WHERE events.status <> 'sent'
        RETURNING id`,
-      [id, e.event_id, e.event_name, e.custom_data?.value ?? 0, e.custom_data?.currency ?? 'IDR', input.source, JSON.stringify(input.payload)]);
+      [id, e.event_id, e.event_name, e.custom_data?.value ?? 0, e.custom_data?.currency ?? 'IDR', input.source, JSON.stringify(input.payload), req.auth!.userId, e.event_time]);
     const eventRowId = up.rows[0]?.id;
-    if (!eventRowId) return { data: { ok: true, duplicate: true, status: 200 } }; // event_id sama sudah terkirim (idempoten)
+    if (!eventRowId) { // event_id sama sudah terkirim (idempoten): dilewati, tapi dicatat
+      const dup = (await db.query<{ id: string }>('UPDATE events SET duplicates = duplicates + 1 WHERE workspace_id = $1 AND event_id = $2 RETURNING id', [id, e.event_id])).rows[0];
+      if (dup) await addAttempt(app, dup.id, null, 'Dilewati — event_id sudah terkirim');
+      return { data: { ok: true, duplicate: true, status: 200 } };
+    }
 
-    const r = await app.meta(`/${row.meta_dataset_id}/events`, token, { method: 'POST', body: input.payload });
-    const error = r.ok ? null : String(r.body?.error?.message ?? 'Gagal');
-    await db.query("UPDATE events SET status = $2, response = $3, error = $4, sent_at = CASE WHEN $2 = 'sent' THEN now() ELSE NULL END WHERE id = $1",
-      [eventRowId, r.ok ? 'sent' : 'failed', JSON.stringify(r.body ?? {}), error]);
+    const r = await deliver(app, eventRowId, target, input.payload);
     await audit(db, { workspaceId: id, userId: req.auth!.userId, action: r.ok ? 'meta.event_sent' : 'meta.event_failed', target: e.event_id, meta: { event: e.event_name }, ip: req.ip });
-    return { data: r.ok ? { ok: true, status: r.status, events_received: r.body?.events_received } : { ok: false, status: r.status, error, code: r.body?.error?.code } };
+    return { data: r };
   });
 
   // ---- Webhook ----
