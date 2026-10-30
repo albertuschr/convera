@@ -66,6 +66,7 @@ export default class App extends React.Component {
       profile: { name: user.name || '', email: user.email || '', phone: user.phone || '' },
     });
     this.setState({ auth: 'in' });
+    this.logic.load();
   };
   doLogout = () => {
     logout().catch(() => {}).finally(() => { setActiveWorkspace(null); this.resetLocal(); this.setState({ auth: 'out', profileOpen: false }); });

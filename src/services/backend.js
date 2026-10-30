@@ -41,3 +41,15 @@ export const metaSave = async (body) => unwrap(await requestJson(ws('/integratio
 export const metaSendEvent = async (payload, source = 'manual') => unwrap(await requestJson(ws('/meta/events'), json('POST', { payload, source })));
 export const webhookSave = async (body) => unwrap(await requestJson(ws('/integrations/webhook'), json('PUT', body)));
 export const webhookTest = async () => unwrap(await requestJson(ws('/integrations/webhook/test'), json('POST')));
+
+// Leads, event konversi, dan angka dashboard (Fase 1).
+const qs = (o = {}) => { const p = new URLSearchParams(Object.entries(o).filter(([, x]) => x !== undefined && x !== null && x !== '')); return p.toString() ? `?${p}` : ''; };
+export const listLeads = async (query) => unwrap(await requestJson(ws(`/leads${qs({ limit: 500, ...query })}`)));
+export const getLead = async (id) => unwrap(await requestJson(ws(`/leads/${id}`)));
+export const markLead = async (id, body) => unwrap(await requestJson(ws(`/leads/${id}/events`), json('POST', body)));
+export const bulkLeadStatus = async (ids, status) => unwrap(await requestJson(ws('/leads/bulk-status'), json('POST', { ids, status })));
+export const forgetContact = async (phone) => unwrap(await requestJson(ws('/contacts/forget'), json('POST', { phone })));
+export const listEvents = async (query) => unwrap(await requestJson(ws(`/events${qs({ limit: 500, ...query })}`)));
+export const getEvent = async (id) => unwrap(await requestJson(ws(`/events/${id}`)));
+export const resendEvent = async (id) => unwrap(await requestJson(ws(`/events/${id}/resend`), json('POST')));
+export const getDashboard = async ({ from, to }) => unwrap(await requestJson(ws(`/dashboard${qs({ from, to })}`)));

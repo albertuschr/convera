@@ -4,7 +4,7 @@ import { normPhone, isDatasetId, isToken } from './validators.js';
 import { appConfig } from './config.js';
 import { metaTest, metaSave, metaSendEvent } from './backend.js';
 export const LIVE = appConfig.liveMetaApi; // true = panggil Graph API sungguhan
-const GRAPH = 'https://graph.facebook.com/v19.0';
+const GRAPH = 'https://graph.facebook.com/v26.0';
 const NEEDS_VALUE = ['Purchase', 'InitiateCheckout', 'AddToCart'];
 
 export async function buildEvent({ event, value = 0, clid, phone, email, eventId, time, testCode }) {

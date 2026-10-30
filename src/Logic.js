@@ -5,6 +5,17 @@ import { buildEvent, sendEvent, testConnection } from './services/capi.js';
 import { testWebhook, saveWebhook } from './services/webhook.js';
 import { randomToken, uid } from './services/crypto.js';
 import { parseRecipients, checkPassword, isHttps, normPhone } from './services/validators.js';
+import { appConfig } from './services/config.js';
+import { listLeads, getLead, markLead, bulkLeadStatus, forgetContact, listEvents, getEvent, resendEvent, getDashboard } from './services/backend.js';
+
+// Preset rentang tanggal (0 Hari ini … 5 Bulan lalu) sebagai [from, to) pada batas hari lokal.
+export function rangeOf(i, now = new Date()) {
+  const day = (y, m, d) => new Date(y, m, d), Y = now.getFullYear(), M = now.getMonth(), T = now.getDate();
+  const r = [[day(Y, M, T), day(Y, M, T + 1)], [day(Y, M, T - 1), day(Y, M, T)], [day(Y, M, T - 6), day(Y, M, T + 1)], [day(Y, M, T - 29), day(Y, M, T + 1)], [day(Y, M, 1), day(Y, M, T + 1)], [day(Y, M - 1, 1), day(Y, M, 1)]][i] || [day(Y, M, T - 6), day(Y, M, T + 1)];
+  const f = (d) => d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
+  const last = new Date(+r[1] - 1);
+  return { from: r[0], to: r[1], days: Math.round((r[1] - r[0]) / 864e5), hint: +r[0] === +day(last.getFullYear(), last.getMonth(), last.getDate()) ? f(r[0]) : f(r[0]) + '–' + f(last) };
+}
 
 class Component extends DCLogic {
   state = {
@@ -16,6 +27,27 @@ class Component extends DCLogic {
     profile: { name: 'Raka Santoso', email: 'raka@convera.id', phone: '+62 812-0000-0000' },
   };
   componentDidMount() { this.onR = () => this.setState({ width: window.innerWidth }); this.onR(); window.addEventListener('resize', this.onR); }
+
+  // Mode backend: muat lead, event, dan angka dashboard. Dipanggil setelah login, saat rentang tanggal berubah, dan setelah ada perubahan data.
+  async load() {
+    if (!appConfig.backendEnabled) return;
+    const seq = (this.loadSeq = (this.loadSeq || 0) + 1);
+    const { from, to } = rangeOf(this.state.range ?? 2);
+    const q = { from: from.toISOString(), to: to.toISOString() };
+    try {
+      const [leads, events, dash] = await Promise.all([listLeads(), listEvents(q), getDashboard(q)]);
+      if (seq === this.loadSeq) this.setState((st) => ({ srv: { ...(st.srv || {}), leads, events, dash, error: null } }));
+    } catch (e) {
+      if (seq === this.loadSeq) this.setState((st) => ({ srv: { ...(st.srv || {}), error: e.message }, toast: { title: 'Gagal memuat data', sub: e.message } }));
+    }
+  }
+  // Detail lead (riwayat event) dan detail event (payload, respons Meta, riwayat kirim) diambil saat dibuka.
+  async loadDetail(kind, id) {
+    try {
+      const data = kind === 'lead' ? await getLead(id) : await getEvent(id);
+      this.setState((st) => ({ srv: { ...(st.srv || {}), [kind]: { ...((st.srv || {})[kind] || {}), [id]: data } } }));
+    } catch (e) { this.setState({ toast: { title: 'Gagal memuat detail', sub: e.message } }); }
+  }
   componentWillUnmount() { window.removeEventListener('resize', this.onR); clearTimeout(this.t1); clearTimeout(this.t2); clearTimeout(this.tt); clearInterval(this.iv); }
 
   theme(dark, accent, status) {
@@ -105,7 +137,9 @@ class Component extends DCLogic {
     const BTN = { fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: 36, padding: '0 14px', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', flex: 'none' };
     const bP = { ...BTN, background: 'var(--accent)', color: '#fff' }, bW = { ...BTN, background: 'var(--surface)', color: 'var(--text)' }, bN = { ...BTN, background: 'var(--neutral)', color: 'var(--muted)' }, bD = { ...BTN, background: 'transparent', color: 'var(--danger)' };
     const goP = (page) => (e) => { if (e && e.preventDefault) e.preventDefault(); set({ page }); };
-    const NOW = new Date(2026, 9, 17, 14, 40);
+    // BE = mode backend: semua angka dari server (s.srv). Tanpa backend, halaman memakai data contoh di bawah.
+    const BE = appConfig.backendEnabled, SV = s.srv || {}, DSH = SV.dash, RG = rangeOf(s.range ?? 2);
+    const NOW = BE ? new Date() : new Date(2026, 9, 17, 14, 40);
     const tfmt = (d) => d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) + ', ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     const CH = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789', HEX = '0123456789abcdef';
     const clidOf = (i) => 'AR' + Array.from({ length: 22 }, (_, k) => CH[(i * 31 + k * 17 + k * k * 7) % CH.length]).join('');
@@ -124,8 +158,10 @@ class Component extends DCLogic {
       { name: 'Testimoni Pelanggan', camp: 'Awareness', set: 'Broad Jabodetabek', head: '“Kopi susu terenak di Tebet”', body: 'Sudah 12.000+ cup terjual bulan ini.' },
       { name: 'Kopi Gratis Ulang Tahun', camp: 'Awareness', set: 'Ulang tahun bulan ini', head: 'Ulang tahun? Kopi gratis!', body: 'Tunjukkan KTP di outlet, berlaku 7 hari.' },
     ];
-    const adIdx = (n) => Math.max(0, ADS.findIndex((a) => a.name === n));
-    const PF = [
+    const adIdx = (n) => (BE ? [...String(n)].reduce((a, ch) => a + ch.charCodeAt(0), 0) % 4 : Math.max(0, ADS.findIndex((a) => a.name === n)));
+    // Performa per iklan: [kampanye, [[ad set, [[iklan, spend, chat, lead, purchase, nilai]]]]]
+    const groupAds = (ads) => { const m = new Map(); ads.forEach((a) => { if (!m.has(a.campaign)) m.set(a.campaign, new Map()); const sm = m.get(a.campaign); const k = a.adSet || '(tanpa ad set)'; if (!sm.has(k)) sm.set(k, []); sm.get(k).push([a.ad, a.spend, a.chats, a.leads, a.purchases, a.value]); }); return [...m].map(([c, sm]) => [c, [...sm]]); };
+    const PF = BE ? groupAds(DSH?.ads || []) : [
       ['Promo Oktober', [['Jaksel 18–34', [['Promo Kopi Susu 2.0', 1850000, 412, 210, 74, 31200000], ['Kopi Susu Foto Produk', 520000, 96, 40, 8, 3100000]]], ['Retarget 30 hari', [['Diskon Ojol 20%', 760000, 174, 88, 21, 4620000]]]]],
       ['Hampers Korporat', [['Pekerja kantor', [['Paket Bundling Hampers', 1420000, 286, 150, 48, 26400000], ['Hampers Video Unboxing', 380000, 64, 22, 3, 1050000]]]]],
       ['Menu Baru', [['Interest kopi', [['Carousel Menu Baru', 980000, 198, 96, 27, 8100000]]]]],
@@ -136,55 +172,88 @@ class Component extends DCLogic {
     const roasT = (r) => r.toLocaleString('id-ID', { maximumFractionDigits: 1 }) + '×';
 
     // ---------- overview ----------
-    const DAYS = [1, 1, 7, 30, 17, 30][s.range] || 7, kf = DAYS / 7;
-    const chat = Math.round(1284 * kf), lead = Math.round(642 * kf), purch = Math.round(186 * kf), val = 84720000 * kf, spend = 7120000 * kf;
+    const DAYS = BE ? RG.days : [1, 1, 7, 30, 17, 30][s.range] || 7, kf = DAYS / 7;
+    const KC = DSH?.current || {}, KP = DSH?.previous || {};
+    const chat = BE ? KC.chats || 0 : Math.round(1284 * kf), lead = BE ? KC.leads || 0 : Math.round(642 * kf), purch = BE ? KC.purchases || 0 : Math.round(186 * kf), val = BE ? KC.value || 0 : 84720000 * kf, spend = BE ? KC.spend || 0 : 7120000 * kf;
     const cmp = DAYS === 1 ? 'vs kemarin' : 'vs ' + DAYS + ' hari sebelumnya';
-    const kpis = [['Chat dari iklan', fmt(chat), '+12,4%', true, ic.chat], ['Lead', fmt(lead), '+8,1%', true, ic.users], ['Purchase', fmt(purch), '+21,6%', true, ic.bag], ['Nilai pembelian', rp(Math.round(val / 1000) * 1000), '+18,9%', true, ic.wallet], ['Cost per Purchase', rp(Math.round(spend / purch / 100) * 100), '−6,2%', true, ic.target, true], ['ROAS', roasT(val / spend), '+1,4', true, ic.trend, true], ['Match rate ctwa_clid', '93,8%', '+2,1 pt', true, ic.link], ['Skor EMQ', '7,8', '−0,3', false, ic.shield]]
+    const pct = (c, p) => (!p ? (c ? 'baru' : '—') : (c >= p ? '+' : '−') + Math.abs((c - p) / p * 100).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + '%');
+    const cppOf = (o) => (o.purchases ? o.spend / o.purchases : 0), roasOf = (o) => (o.spend ? o.value / o.spend : 0), mrOf = (o) => (o.chats ? o.with_clid / o.chats * 100 : 0);
+    // [label, nilai, sekarang, sebelumnya, naik = bagus, ikon, growth]
+    const kpisBE = [['Chat dari iklan', fmt(chat), KC.chats, KP.chats, true, ic.chat], ['Lead', fmt(lead), KC.leads, KP.leads, true, ic.users], ['Purchase', fmt(purch), KC.purchases, KP.purchases, true, ic.bag], ['Nilai pembelian', rp(val), KC.value, KP.value, true, ic.wallet],
+      ['Cost per Purchase', purch && spend ? rp(Math.round(spend / purch / 100) * 100) : '—', cppOf(KC), cppOf(KP), false, ic.target, true], ['ROAS', spend ? roasT(val / spend) : '—', roasOf(KC), roasOf(KP), true, ic.trend, true],
+      ['Match rate ctwa_clid', chat ? mrOf(KC).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + '%' : '—', mrOf(KC), mrOf(KP), true, ic.link], ['Skor EMQ', '—', 0, 0, true, ic.shield]]
+      .map(([label, value, c, p, up, icon, growth]) => [label, value, pct(c || 0, p || 0), !p || (up ? c >= p : c <= p), icon, growth]);
+    const kpis = (BE ? kpisBE : [['Chat dari iklan', fmt(chat), '+12,4%', true, ic.chat], ['Lead', fmt(lead), '+8,1%', true, ic.users], ['Purchase', fmt(purch), '+21,6%', true, ic.bag], ['Nilai pembelian', rp(Math.round(val / 1000) * 1000), '+18,9%', true, ic.wallet], ['Cost per Purchase', rp(Math.round(spend / purch / 100) * 100), '−6,2%', true, ic.target, true], ['ROAS', roasT(val / spend), '+1,4', true, ic.trend, true], ['Match rate ctwa_clid', '93,8%', '+2,1 pt', true, ic.link], ['Skor EMQ', '7,8', '−0,3', false, ic.shield]])
       .map(([label, value, delta, good, icon, growth]) => ({ label, value, delta, icon, growth: !!growth, cmp, ds: pill(good ? 'ok' : 'err', { height: 22, padding: '0 8px', fontSize: 11 }) }));
-    const klik = Math.round(chat * 2.66);
+    const klik = BE ? KC.clicks || 0 : Math.round(chat * 2.66), fBase = Math.max(klik, chat, 1);
     const FN = [['Klik iklan', klik], ['Chat', chat], ['Lead', lead], ['Purchase', purch]];
-    const funnel = FN.map(([label, v], i) => ({ label, value: fmt(v), rate: i ? (v / FN[i - 1][1] * 100).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + '%' : '', bar: { height: '100%', width: (v / klik * 100) + '%', minWidth: 8, borderRadius: 999, background: i === 3 ? 'var(--accent)' : 'var(--text)', opacity: i === 3 ? 1 : 0.8 - i * 0.22 } }));
-    const n = Math.max(DAYS, 7);
-    const cs = Array.from({ length: n }, (_, i) => 183 * (1 + Math.sin(i * 0.8 + 1) * 0.16 + Math.sin(i * 0.23) * 0.1 + ((i * 7919) % 13) / 13 * 0.12));
-    const ps = cs.map((c, i) => c * 0.145 * (1 + Math.sin(i * 1.3 + 2) * 0.22));
-    const cMax = Math.ceil(Math.max(...cs) * 1.15 / 50) * 50, pMax = Math.ceil(Math.max(...ps) * 1.15 / 10) * 10;
+    const funnel = FN.map(([label, v], i) => ({ label, value: fmt(v), rate: i ? (FN[i - 1][1] ? (v / FN[i - 1][1] * 100).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + '%' : '—') : '', bar: { height: '100%', width: (v / fBase * 100) + '%', minWidth: 8, borderRadius: 999, background: i === 3 ? 'var(--accent)' : 'var(--text)', opacity: i === 3 ? 1 : 0.8 - i * 0.22 } }));
+    const daily = BE ? (DSH?.daily?.length > 1 ? DSH.daily : Array.from({ length: 7 }, (_, i) => ({ day: new Date(+RG.to - (7 - i) * 864e5), chats: 0, purchases: 0 }))) : null;
+    const n = BE ? daily.length : Math.max(DAYS, 7);
+    const cs = BE ? daily.map((d) => d.chats) : Array.from({ length: n }, (_, i) => 183 * (1 + Math.sin(i * 0.8 + 1) * 0.16 + Math.sin(i * 0.23) * 0.1 + ((i * 7919) % 13) / 13 * 0.12));
+    const ps = BE ? daily.map((d) => d.purchases) : cs.map((c, i) => c * 0.145 * (1 + Math.sin(i * 1.3 + 2) * 0.22));
+    const cMax = BE ? Math.max(10, Math.ceil(Math.max(...cs) * 1.15 / 10) * 10) : Math.ceil(Math.max(...cs) * 1.15 / 50) * 50;
+    const pMax = BE ? Math.max(5, Math.ceil(Math.max(...ps) * 1.15 / 5) * 5) : Math.ceil(Math.max(...ps) * 1.15 / 10) * 10;
     const path = (arr, mx) => arr.map((v, i) => (i ? 'L' : 'M') + (i / (n - 1) * 700).toFixed(1) + ',' + (219 - v / mx * 214).toFixed(1)).join(' ');
     const chatLine = path(cs, cMax);
-    const xL = Array.from({ length: 6 }, (_, k) => { const i = Math.round(k / 5 * (n - 1)); return new Date(2026, 9, 17 - (n - 1 - i)).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }); });
-    const topAds = allAds.slice().sort((x, y) => y.a[4] - x.a[4]).slice(0, 5).map(({ a, camp }) => ({ name: a[0], camp, ini: ini(a[0]), thumb: thumb(adIdx(a[0])), spend: rpS(a[1]), chat: fmt(a[2]), purch: fmt(a[4]), roas: roasT(a[5] / a[1]), rs: roasPill(a[5] / a[1]) }));
-    const insights = [[ic.alert, 'err', 'Iklan “Kopi Gratis Ulang Tahun”: 48 chat, 0 purchase dalam 14 hari', 'Rp 450.000 terpakai tanpa closing. Pertimbangkan jeda atau ganti materi iklan.', 'Lihat iklan →', 'performa'], [ic.trend, 'ok', '“Paket Bundling Hampers” ROAS 18,6× — tertinggi minggu ini', 'Rata-rata order Rp 550.000. Naikkan budget ad set “Pekerja kantor”.', 'Lihat performa →', 'performa'], [ic.clock, 'soft', '23 lead Checkout lewat batas 7 hari dalam 24 jam', 'Tandai Purchase sekarang agar Meta tetap menghitungnya.', 'Buka Leads →', 'leads']]
+    const xL = Array.from({ length: 6 }, (_, k) => { const i = Math.round(k / 5 * (n - 1)); return (BE ? new Date(daily[i].day + (typeof daily[i].day === 'string' ? 'T00:00' : '')) : new Date(2026, 9, 17 - (n - 1 - i))).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }); });
+    const roasA = (a) => (a[1] ? a[5] / a[1] : 0);
+    const topAds = allAds.slice().sort((x, y) => y.a[4] - x.a[4]).slice(0, 5).map(({ a, camp }) => ({ name: a[0], camp, ini: ini(a[0]), thumb: thumb(adIdx(a[0])), spend: rpS(a[1]), chat: fmt(a[2]), purch: fmt(a[4]), roas: roasT(roasA(a)), rs: roasPill(roasA(a)) }));
+    // Insight dihitung dari data: iklan boros tanpa purchase, ROAS tertinggi, dan checkout yang hampir lewat 7 hari.
+    const worstAd = allAds.filter(({ a }) => a[2] >= 10 && !a[4] && a[1]).sort((x, y) => y.a[1] - x.a[1])[0];
+    const bestAd = allAds.filter(({ a }) => a[4] && a[1]).sort((x, y) => roasA(y.a) - roasA(x.a))[0];
+    const expSoon = DSH?.counts?.expiring24h || 0;
+    const insightsBE = [
+      worstAd && [ic.alert, 'err', 'Iklan “' + worstAd.a[0] + '”: ' + fmt(worstAd.a[2]) + ' chat, 0 purchase', rp(worstAd.a[1]) + ' terpakai tanpa closing. Pertimbangkan jeda atau ganti materi iklan.', 'Lihat iklan →', 'performa'],
+      bestAd && [ic.trend, 'ok', '“' + bestAd.a[0] + '” ROAS ' + roasT(roasA(bestAd.a)) + ' — tertinggi di periode ini', fmt(bestAd.a[4]) + ' purchase senilai ' + rpS(bestAd.a[5]) + '. Pertimbangkan menaikkan budget ad set “' + bestAd.camp + '”.', 'Lihat performa →', 'performa'],
+      expSoon && [ic.clock, 'soft', fmt(expSoon) + ' lead Checkout lewat batas 7 hari dalam 24 jam', 'Tandai Purchase sekarang agar Meta tetap menghitungnya.', 'Buka Leads →', 'leads'],
+    ].filter(Boolean);
+    const insights = (BE ? insightsBE : [[ic.alert, 'err', 'Iklan “Kopi Gratis Ulang Tahun”: 48 chat, 0 purchase dalam 14 hari', 'Rp 450.000 terpakai tanpa closing. Pertimbangkan jeda atau ganti materi iklan.', 'Lihat iklan →', 'performa'], [ic.trend, 'ok', '“Paket Bundling Hampers” ROAS 18,6× — tertinggi minggu ini', 'Rata-rata order Rp 550.000. Naikkan budget ad set “Pekerja kantor”.', 'Lihat performa →', 'performa'], [ic.clock, 'soft', '23 lead Checkout lewat batas 7 hari dalam 24 jam', 'Tandai Purchase sekarang agar Meta tetap menghitungnya.', 'Buka Leads →', 'leads']])
       .map(([icon, k, title, body, cta, pg]) => ({ icon, title, body, cta, go: goP(pg), is: { width: 32, height: 32, flex: 'none', borderRadius: 9, background: PL[k][0], color: PL[k][1], display: 'flex', alignItems: 'center', justifyContent: 'center' } }));
-    const health = [['Meta Dataset', metaOn ? 'Terhubung' : 'Terputus', metaOn ? 'ok' : 'err'], ['WhatsApp +62 812-•••-7890', waOn ? 'Terhubung' : 'Terputus', waOn ? 'ok' : 'err'], ['Event gagal 24 jam', '3 event', 'warn'], ['Masa berlaku token Meta', tokenDays + ' hari lagi', tokenDays < 14 ? 'warn' : 'ok']]
+    const metaBE = DSH?.meta || {}, failed24 = DSH?.counts?.failed24h || 0, totalLeads = DSH?.counts?.totalLeads ?? null;
+    // WhatsApp Cloud API baru tersambung di Fase 2.
+    const health = (BE ? [['Meta Dataset', metaBE.connected ? (metaBE.mock ? 'Mode mock (dev)' : 'Terhubung') : 'Belum terhubung', metaBE.connected && !metaBE.mock ? 'ok' : metaBE.connected ? 'warn' : 'err'], ['WhatsApp', 'Belum terhubung', 'warn'], ['Event gagal 24 jam', fmt(failed24) + ' event', failed24 ? 'warn' : 'ok'], ['Total lead', totalLeads === null ? '—' : fmt(totalLeads), 'ok']]
+      : [['Meta Dataset', metaOn ? 'Terhubung' : 'Terputus', metaOn ? 'ok' : 'err'], ['WhatsApp +62 812-•••-7890', waOn ? 'Terhubung' : 'Terputus', waOn ? 'ok' : 'err'], ['Event gagal 24 jam', '3 event', 'warn'], ['Masa berlaku token Meta', tokenDays + ' hari lagi', tokenDays < 14 ? 'warn' : 'ok']])
       .map(([label, value, k]) => ({ label, value, dot: { width: 8, height: 8, borderRadius: '50%', flex: 'none', background: dotC(k) }, vs: { fontSize: 13, fontWeight: 700, color: k === 'ok' ? 'var(--text)' : 'var(--accentText)' } }));
-    const steps = [['Buat workspace', 'Laundry Kilat Bersih · Jasa · Depok', true], ['Hubungkan Meta Dataset', 'Dataset & access token untuk Conversions API', true], ['Hubungkan WhatsApp', 'Agar chat dari iklan tercatat sebagai Lead', false, 'Hubungkan', 'koneksi'], ['Pilih cara kirim konversi', 'API, tandai manual, atau aturan otomatis', false, 'Atur', 'aturan'], ['Kirim event percobaan', 'Pastikan event muncul di Meta Test Events', false, 'Kirim tes', 'developer']]
+    const steps = [['Buat workspace', BE ? WS[s.ws][0] : 'Laundry Kilat Bersih · Jasa · Depok', true], ['Hubungkan Meta Dataset', 'Dataset & access token untuk Conversions API', BE ? !!metaBE.connected && !metaBE.mock : true, 'Hubungkan', 'koneksi'], ['Hubungkan WhatsApp', 'Agar chat dari iklan tercatat sebagai Lead', false, 'Hubungkan', 'koneksi'], ['Pilih cara kirim konversi', 'API, tandai manual, atau aturan otomatis', false, 'Atur', 'aturan'], ['Kirim event percobaan', 'Pastikan event muncul di Meta Test Events', BE && (SV.events || []).some((e) => e.status === 'sent'), 'Kirim tes', 'developer']]
       .map(([title, desc, done, cta, pg]) => ({ title, desc, todo: !done, cta, go: goP(pg), mark: done ? ic.check : '', ts: { fontSize: 14, fontWeight: 700, color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }, dot: { width: 26, height: 26, flex: 'none', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: done ? 'var(--accent)' : 'var(--neutral)', color: '#fff' } }));
-    const ov = { starter: s.ws === 3, full: s.ws !== 3, kpis, funnel, funnelRate: 'Klik → Purchase ' + (purch / klik * 100).toFixed(1).replace('.', ',') + '%', chatLine, chatArea: chatLine + ' L700,219 L0,219 Z', purchLine: path(ps, pMax), xL, yL: [cMax, cMax / 2, 0].map(fmt), yR: [pMax, pMax / 2, 0].map(fmt), topAds, insights, health, steps, goPerf: goP('performa'), goKoneksi: goP('koneksi') };
+    // Workspace yang belum punya lead sama sekali menampilkan checklist setup, bukan grafik kosong.
+    const starter = BE ? totalLeads === 0 : s.ws === 3;
+    const ov = { starter, full: !starter, kpis, funnel, funnelRate: 'Klik → Purchase ' + (klik ? (purch / klik * 100).toFixed(1).replace('.', ',') + '%' : '—'), chatLine, chatArea: chatLine + ' L700,219 L0,219 Z', purchLine: path(ps, pMax), xL, yL: [cMax, cMax / 2, 0].map(fmt), yR: [pMax, pMax / 2, 0].map(fmt), topAds, insights, health, steps, goPerf: goP('performa'), goKoneksi: goP('koneksi') };
 
     // ---------- leads ----------
     const LB = [[1, 'Andi Pratama', '628•••7890', 0, 'Kak, promo kopi susu 2.0 masih ada?', 6, 'Baru', 0], [2, 'Siti Rahmawati', '628•••4412', 1, 'Mau pesan hampers 10 box buat kantor, bisa invoice PT?', 20, 'Checkout', 3500000], [3, 'Budi Santoso', '628•••0921', 2, 'Menu baru ada yang non-kopi?', 30, 'Lead', 0], [4, 'Dewi Lestari', '628•••3378', 0, 'Bisa kirim ke Tebet hari ini?', 52, 'Purchase', 89000], [5, 'Rizky Hidayat', '628•••6650', 3, 'Kode diskonnya apa kak?', 75, 'Lead', 0], [6, 'Nur Aini', '628•••1209', 1, 'Hampers yang 350rb isinya apa aja?', 151, 'Checkout', 350000], [7, 'Fajar Nugroho', '628•••8834', 4, 'Halo, buka jam berapa ya?', 160, 'Baru', 0], [8, 'Putri Ayu', '628•••5521', 2, 'Saya mau 2 Aren Latte ya', 98, 'Purchase', 64000], [9, 'Hendra Wijaya', '628•••7716', 0, 'Kak jadi pesan 1 liter ya', 190, 'Checkout', 120000], [10, 'Maya Sari', '628•••2290', 5, 'Ultah saya besok, dapat kopi gratis?', 40, 'Hilang', 0], [11, 'Agus Salim', '628•••4057', 3, 'Sudah transfer ya kak, 215rb', 12, 'Checkout', 215000], [12, 'Lina Marlina', '628•••9183', -1, 'Halo kak, mau tanya', 3, 'Baru', 0]];
     const lov = s.leadOv || {};
-    const LEADS = LB.filter(([, , phone]) => !(s.delPhones || []).includes(normPhone(phone))).map(([id, name, phone, ad, msg, clickH, status, value]) => { const o = lov[id] || {}; return { id, name, phone, ad, A: ad >= 0 ? ADS[ad] : null, msg, clickAt: new Date(+NOW - clickH * 3600e3), base: status, baseVal: value, status: o.status || status, value: o.value ?? value, events: o.events || [], hl: 168 - clickH, organic: ad < 0, clid: ad >= 0 ? clidOf(id) : null }; });
+    const LST = { new: 'Baru', lead: 'Lead', checkout: 'Checkout', purchase: 'Purchase', lost: 'Hilang' };
+    // Bentuk lead dari server disamakan dengan data contoh agar sisa halaman tidak perlu tahu sumbernya.
+    const leadOf = (l) => { const clickAt = new Date(l.clickedAt); return { id: l.id, name: l.name || l.phone, phone: l.phone, ad: l.ad ? adIdx(l.ad) : -1,
+      A: l.ad ? { name: l.ad, camp: l.campaign || '(tanpa kampanye)', set: l.adSet || '—', head: l.adHeadline || l.ad, body: l.adBody || '' } : null,
+      msg: l.firstMessage || '—', clickAt, base: LST[l.status], baseVal: l.value, status: LST[l.status], value: l.value, events: [], hl: Math.floor(168 - (+NOW - +clickAt) / 3600e3), organic: !l.ctwaClid, clid: l.ctwaClid }; };
+    const LEADS = BE ? (SV.leads || []).map(leadOf) : LB.filter(([, , phone]) => !(s.delPhones || []).includes(normPhone(phone))).map(([id, name, phone, ad, msg, clickH, status, value]) => { const o = lov[id] || {}; return { id, name, phone, ad, A: ad >= 0 ? ADS[ad] : null, msg, clickAt: new Date(+NOW - clickH * 3600e3), base: status, baseVal: value, status: o.status || status, value: o.value ?? value, events: o.events || [], hl: 168 - clickH, organic: ad < 0, clid: ad >= 0 ? clidOf(id) : null }; });
     const LSP = { Baru: 'plain', Lead: 'soft', Checkout: 'accent', Purchase: 'ok', Hilang: 'neutral' };
     const lq = (s.ldQ || '').toLowerCase(), lcamp = s.ldCamp || 'Semua kampanye', lst = s.ldStatus || 'Semua';
-    const lbase = LEADS.filter((l) => (lcamp === 'Semua kampanye' || (l.organic ? lcamp === 'Organik' : l.A.camp === lcamp)) && (!lq || (l.name + l.phone + (l.A ? l.A.name : 'organik')).toLowerCase().includes(lq)));
+    const lbase = LEADS.filter((l) => (lcamp === 'Semua kampanye' || (!l.A ? lcamp === 'Organik' : l.A.camp === lcamp)) && (!lq || (l.name + l.phone + (l.A ? l.A.name : 'organik')).toLowerCase().includes(lq)));
+    const openLead = (id) => { set({ ldOpen: id }); if (BE) this.loadDetail('lead', id); };
     const lrows = lbase.filter((l) => lst === 'Semua' || l.status === lst);
     const sel = s.ldSel || {}; const nSel = lrows.filter((l) => sel[l.id]).length;
     const box = (on) => ({ fontFamily: 'inherit', width: 20, height: 20, borderRadius: 6, border: 'none', padding: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: on ? 'var(--accent)' : 'var(--surface)', color: '#fff', boxShadow: on ? 'none' : 'inset 0 0 0 1.5px var(--borderStrong)' });
     const cdOf = (l) => l.organic ? ['Organik', pill('neutral')] : l.hl <= 0 ? ['Kedaluwarsa', pill('neutral', { textDecoration: 'line-through' })] : l.hl < 24 ? [l.hl + ' jam lagi', pill('err')] : [Math.floor(l.hl / 24) + ' hari lagi', pill('plain')];
     const openMk = (l) => set({ mk: { id: l.id, ev: s.defEv || 'Purchase', amount: l.value ? String(l.value) : '', note: '' }, ldOpen: null });
-    const actOf = (l) => l.status === 'Purchase' ? ['Terkirim ✓', bN, () => set({ ldOpen: l.id })] : l.organic ? ['Tanpa ctwa_clid', bN, () => set({ ldOpen: l.id })] : l.hl <= 0 ? ['Lewat 7 hari', bN, () => openMk(l)] : ['Tandai Purchase', bP, () => openMk(l)];
+    const actOf = (l) => l.status === 'Purchase' ? ['Terkirim ✓', bN, () => openLead(l.id)] : l.organic ? ['Tanpa ctwa_clid', bN, () => openLead(l.id)] : l.hl <= 0 ? ['Lewat 7 hari', bN, () => openMk(l)] : ['Tandai Purchase', bP, () => openMk(l)];
     const LG = '36px minmax(180px,1.1fr) minmax(230px,1.4fr) minmax(200px,1.3fr) 110px 130px 110px 150px';
     const csv = (name, head, rows) => downloadCsv(name, head, rows);
     const ld = {
       q: s.ldQ || '', setQ: (e) => set({ ldQ: e.target.value }), camp: lcamp, setCamp: (e) => set({ ldCamp: e.target.value }),
+      camps: ['Semua kampanye', ...new Set(LEADS.filter((l) => l.A).map((l) => l.A.camp)), 'Organik'],
       chips: ['Semua', 'Baru', 'Lead', 'Checkout', 'Purchase', 'Hilang'].map((x) => ({ label: x, count: x === 'Semua' ? lbase.length : lbase.filter((l) => l.status === x).length, pick: () => set({ ldStatus: x }), style: chip(lst === x), cs: { fontSize: 11, fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: lst === x ? 'rgba(127,127,127,0.25)' : 'var(--surface)' } })),
       exportCsv: () => csv('convera-leads.csv', ['nama', 'nomor', 'iklan', 'kampanye', 'status', 'nilai'], lrows.map((l) => [l.name, l.phone, l.A ? l.A.name : 'Organik', l.A ? l.A.camp : '-', l.status, l.value])),
       bulk: nSel > 0, selLabel: nSel + ' lead dipilih', clearSel: () => set({ ldSel: {} }),
-      bulkLost: () => { const o = { ...lov }; lrows.filter((l) => sel[l.id]).forEach((l) => (o[l.id] = { ...(o[l.id] || {}), status: 'Hilang' })); set({ leadOv: o, ldSel: {} }); say(nSel + ' lead ditandai Hilang'); },
+      bulkLost: () => { if (BE) { const ids = lrows.filter((l) => sel[l.id]).map((l) => l.id); set({ ldSel: {} }); bulkLeadStatus(ids, 'lost').then(() => { say(ids.length + ' lead ditandai Hilang'); this.load(); }).catch((e) => say('Gagal mengubah status', e.message)); return; }
+        const o = { ...lov }; lrows.filter((l) => sel[l.id]).forEach((l) => (o[l.id] = { ...(o[l.id] || {}), status: 'Hilang' })); set({ leadOv: o, ldSel: {} }); say(nSel + ' lead ditandai Hilang'); },
       allBox: box(lrows.length > 0 && nSel === lrows.length), allTick: lrows.length > 0 && nSel === lrows.length ? ic.check : null,
       toggleAll: () => { const all = nSel === lrows.length; const o = {}; if (!all) lrows.forEach((l) => (o[l.id] = true)); set({ ldSel: o }); },
       desktop: !mobile && lrows.length > 0, mobile: mobile && lrows.length > 0, empty: lrows.length === 0,
-      rows: lrows.map((l) => { const [cd, cdS] = cdOf(l); const [actLabel, aS, act] = actOf(l); return { name: l.name, phone: l.phone, ini: ini(l.name), adName: l.A ? l.A.name : 'Chat organik', adPath: l.A ? l.A.camp + ' › ' + l.A.set : 'Tidak dari iklan', adIni: l.A ? ini(l.A.name) : '—', thumb: thumb(l.ad < 0 ? 3 : l.ad), msg: '“' + l.msg + '”', time: tfmt(l.clickAt), status: l.status, pill: pill(LSP[l.status]), pd: { width: 6, height: 6, borderRadius: '50%', flex: 'none', background: l.status === 'Baru' ? 'var(--accent)' : 'currentColor' }, cd, cs: { ...cdS, gap: 5 }, value: l.value ? rp(l.value) : '—', actLabel, act, as: { ...aS, height: 34, width: '100%' }, asLg: { ...aS, height: 48, width: '100%', fontSize: 15 }, open: () => set({ ldOpen: l.id }), tick: sel[l.id] ? ic.check : null, box: box(!!sel[l.id]), toggleSel: () => set({ ldSel: { ...sel, [l.id]: !sel[l.id] } }), rowStyle: { display: 'grid', gridTemplateColumns: LG, gap: 14, padding: '10px 18px', alignItems: 'center', borderTop: '1px solid var(--bg)', background: sel[l.id] ? 'var(--accentSoft)' : 'transparent' } }; }),
+      rows: lrows.map((l) => { const [cd, cdS] = cdOf(l); const [actLabel, aS, act] = actOf(l); return { name: l.name, phone: l.phone, ini: ini(l.name), adName: l.A ? l.A.name : 'Chat organik', adPath: l.A ? l.A.camp + ' › ' + l.A.set : 'Tidak dari iklan', adIni: l.A ? ini(l.A.name) : '—', thumb: thumb(l.ad < 0 ? 3 : l.ad), msg: '“' + l.msg + '”', time: tfmt(l.clickAt), status: l.status, pill: pill(LSP[l.status]), pd: { width: 6, height: 6, borderRadius: '50%', flex: 'none', background: l.status === 'Baru' ? 'var(--accent)' : 'currentColor' }, cd, cs: { ...cdS, gap: 5 }, value: l.value ? rp(l.value) : '—', actLabel, act, as: { ...aS, height: 34, width: '100%' }, asLg: { ...aS, height: 48, width: '100%', fontSize: 15 }, open: () => openLead(l.id), tick: sel[l.id] ? ic.check : null, box: box(!!sel[l.id]), toggleSel: () => set({ ldSel: { ...sel, [l.id]: !sel[l.id] } }), rowStyle: { display: 'grid', gridTemplateColumns: LG, gap: 14, padding: '10px 18px', alignItems: 'center', borderTop: '1px solid var(--bg)', background: sel[l.id] ? 'var(--accentSoft)' : 'transparent' } }; }),
     };
     const ml = s.mk ? LEADS.find((l) => l.id === s.mk.id) : null;
     let mk = { open: false };
@@ -200,7 +269,12 @@ class Component extends DCLogic {
         note: s.mk.note, setNote: (e) => upd({ note: e.target.value }),
         preview: [['event_name', ev], ['value', needsValue ? (amt ? amt + ' IDR' : '—') : 'tidak dikirim'], ['ctwa_clid', ml.clid ? ml.clid.slice(0, 16) + '…' : '—'], ['action_source', 'business_messaging'], ['user_data.ph', 'sha256(…' + ml.phone.slice(-4) + ')']].map(([k, v]) => ({ k, v })),
         submitLabel: 'Kirim ke Meta', submitStyle: { ...bP, height: 44, padding: '0 18px', opacity: dis ? 0.4 : 1, cursor: dis ? 'not-allowed' : 'pointer' },
-        submit: () => { if (dis) return; const st = ev === 'Purchase' ? 'Purchase' : ev === 'LeadSubmitted' || ev === 'ViewContent' ? 'Lead' : 'Checkout'; const prev = lov[ml.id] || {}; const v = needsValue ? amt : 0;
+        submit: () => { if (dis) return;
+          // Mode backend: server menyusun payload, meng-hash nomor, mencatat event, dan menaikkan status lead.
+          if (BE) { const v = needsValue ? amt : 0; set({ mk: null }); say('Mengirim ' + ev + ' ke Meta…');
+            markLead(ml.id, { eventName: ev, value: v, eventId: uid() }).then((r) => { say(r.ok ? ev + ' terkirim ke Meta' : r.expired ? ev + ' tidak dikirim' : ev + ' gagal dikirim', r.ok ? (v ? rp(v) + ' · ' : '') + ml.name + ' · ' + ml.phone : r.error); this.load(); })
+              .catch((e) => say(ev + ' gagal dikirim', e.message)); return; }
+          const st = ev === 'Purchase' ? 'Purchase' : ev === 'LeadSubmitted' || ev === 'ViewContent' ? 'Lead' : 'Checkout'; const prev = lov[ml.id] || {}; const v = needsValue ? amt : 0;
           const eid = uid(); this.setState({ mk: null, leadOv: { ...lov, [ml.id]: { status: st, value: v || ml.value, events: [...(prev.events || []), { ev, amt: v, id: eid }] } }, kvNew: [{ id: eid, time: 'Baru saja', name: ml.name, phone: ml.phone, event: ev, value: v, src: 'Manual', status: 'Mengirim', by: 'Rizky (Owner)' }, ...(s.kvNew || [])] });
           const fin = (ok, err) => { this.setState((x) => ({ kvNew: (x.kvNew || []).map((k) => (k.id === eid ? { ...k, status: ok ? 'Terkirim' : 'Gagal', err } : k)) })); say(ok ? ev + ' terkirim ke Meta' : ev + ' gagal dikirim', ok ? (v ? rp(v) + ' · ' : '') + ml.name + ' · ' + ml.phone : err); };
           buildEvent({ event: ev, value: v, clid: ml.clid, phone: ml.phone, eventId: eid }).then((pl) => sendEvent(pl, { datasetId: s.f.dataset, token: s.f.token })).then((r) => fin(r.ok, r.error)).catch((e) => fin(false, e.message)); } };
@@ -212,10 +286,17 @@ class Component extends DCLogic {
       const TL = [];
       if (dl.A) TL.push(['Klik iklan “' + dl.A.name + '”', tfmt(dl.clickAt)]);
       TL.push(['Chat masuk · “' + dl.msg + '”', add(1)]);
-      if (!dl.organic && ['Lead', 'Checkout', 'Purchase'].includes(dl.base)) TL.push(['LeadSubmitted terkirim ke Meta', add(14)]);
-      if (!dl.organic && ['Checkout', 'Purchase'].includes(dl.base)) TL.push(['InitiateCheckout terkirim · ' + rp(dl.baseVal), add(95)]);
-      if (dl.base === 'Purchase') TL.push(['Purchase terkirim · ' + rp(dl.baseVal), add(180)]);
-      dl.events.forEach((e) => TL.push([e.ev + ' terkirim manual' + (e.amt ? ' · ' + rp(e.amt) : ''), 'Baru saja']));
+      if (BE) {
+        const EVS = { sent: 'terkirim ke Meta', failed: 'gagal dikirim', expired: 'tidak dikirim — lewat 7 hari', pending: 'sedang dikirim' };
+        const det = (SV.lead || {})[dl.id];
+        if (!det) TL.push(['Memuat riwayat event…', '']);
+        else det.events.forEach((e) => TL.push([e.eventName + ' ' + (EVS[e.status] || e.status) + (e.value ? ' · ' + rp(e.value) : ''), tfmt(new Date(e.createdAt))]));
+      } else {
+        if (!dl.organic && ['Lead', 'Checkout', 'Purchase'].includes(dl.base)) TL.push(['LeadSubmitted terkirim ke Meta', add(14)]);
+        if (!dl.organic && ['Checkout', 'Purchase'].includes(dl.base)) TL.push(['InitiateCheckout terkirim · ' + rp(dl.baseVal), add(95)]);
+        if (dl.base === 'Purchase') TL.push(['Purchase terkirim · ' + rp(dl.baseVal), add(180)]);
+        dl.events.forEach((e) => TL.push([e.ev + ' terkirim manual' + (e.amt ? ' · ' + rp(e.amt) : ''), 'Baru saja']));
+      }
       if (dl.organic) TL.push(['Tidak dikirim ke Meta — chat organik tanpa ctwa_clid', '']);
       const [cd] = cdOf(dl);
       const fs = (mono) => ({ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: mono ? "'JetBrains Mono',monospace" : 'inherit', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
@@ -227,11 +308,14 @@ class Component extends DCLogic {
 
     // ---------- konversi ----------
     const KVB = [['17 Okt, 14:32', 'Dewi Lestari', '628•••3378', 'Purchase', 89000, 'Manual', 'Terkirim', 'Dina (CS)'], ['17 Okt, 13:05', 'Agus Salim', '628•••4057', 'InitiateCheckout', 215000, 'Otomatis', 'Terkirim', 'Aturan “Sudah transfer”'], ['17 Okt, 11:48', 'Siti Rahmawati', '628•••4412', 'InitiateCheckout', 3500000, 'API', 'Terkirim', 'Bot Kopi Senja'], ['17 Okt, 10:20', 'Putri Ayu', '628•••5521', 'Purchase', 64000, 'API', 'Terkirim', 'Bot Kopi Senja'], ['16 Okt, 21:14', 'Yusuf Maulana', '628•••3021', 'Purchase', 450000, 'Otomatis', 'Terkirim', 'Aturan “Sudah transfer”'], ['16 Okt, 19:02', 'Rina Kartika', '628•••7745', 'Purchase', 1250000, 'Manual', 'Retry', 'Dina (CS)'], ['16 Okt, 16:40', 'Bayu Saputra', '628•••6612', 'AddToCart', 180000, 'API', 'Terkirim', 'Bot Kopi Senja'], ['16 Okt, 13:11', 'Wulan Dari', '628•••0098', 'Purchase', 350000, 'Manual', 'Gagal', 'Arif (Admin)'], ['15 Okt, 20:55', 'Teguh Prasetyo', '628•••4410', 'Purchase', 215000, 'API', 'Terkirim', 'Bot Kopi Senja'], ['15 Okt, 18:30', 'Sari Wulandari', '628•••1187', 'LeadSubmitted', 0, 'Otomatis', 'Duplikat', 'Aturan “Tanya harga”']];
-    const kvAll = [...(s.kvNew || []), ...KVB.map(([time, name, phone, event, value, src, status, by]) => ({ time, name, phone, event, value, src, status, by }))];
+    const SRCL = { api: 'API', manual: 'Manual', auto: 'Otomatis' }, EST = { sent: 'Terkirim', failed: 'Gagal', expired: 'Kedaluwarsa', pending: 'Mengirim' };
+    const EVR = SV.events || [];
+    const kvAll = BE ? EVR.map((e) => ({ time: tfmt(new Date(e.createdAt)), name: e.leadName || '—', phone: e.leadPhone || '—', event: e.eventName, value: e.value, src: SRCL[e.source], status: EST[e.status] || e.status, by: e.by || (e.source === 'auto' ? 'Aturan otomatis' : e.source === 'api' ? 'API' : '—') }))
+      : [...(s.kvNew || []), ...KVB.map(([time, name, phone, event, value, src, status, by]) => ({ time, name, phone, event, value, src, status, by }))];
     const kvSrc = s.kvSrc || 'Semua';
     const kvP = kvAll.filter((r) => r.event === 'Purchase' && r.status === 'Terkirim');
     const kv = {
-      sum: [['Nilai Purchase terkirim', rp(kvP.reduce((a, r) => a + r.value, 0)), kvP.length + ' purchase · 3 hari terakhir'], ['Dari API', String(kvAll.filter((r) => r.src === 'API').length), 'Bot & CRM'], ['Tandai manual', String(kvAll.filter((r) => r.src === 'Manual').length), 'Oleh tim CS'], ['Aturan otomatis', String(kvAll.filter((r) => r.src === 'Otomatis').length), 'Kata kunci & template']].map(([label, value, sub]) => ({ label, value, sub })),
+      sum: [['Nilai Purchase terkirim', rp(kvP.reduce((a, r) => a + r.value, 0)), kvP.length + ' purchase · ' + (BE ? RG.hint : '3 hari terakhir')], ['Dari API', String(kvAll.filter((r) => r.src === 'API').length), 'Bot & CRM'], ['Tandai manual', String(kvAll.filter((r) => r.src === 'Manual').length), 'Oleh tim CS'], ['Aturan otomatis', String(kvAll.filter((r) => r.src === 'Otomatis').length), 'Kata kunci & template']].map(([label, value, sub]) => ({ label, value, sub })),
       chips: ['Semua', 'API', 'Manual', 'Otomatis'].map((x) => ({ label: x === 'Semua' ? 'Semua sumber' : x, pick: () => set({ kvSrc: x }), style: chip(kvSrc === x) })),
       rows: kvAll.filter((r) => kvSrc === 'Semua' || r.src === kvSrc).map((r) => ({ ...r, value: r.value ? rp(r.value) : '—', ss: SRCB, pill: pill(EVP[r.status]) })),
     };
@@ -260,7 +344,9 @@ class Component extends DCLogic {
       });
     });
     const allOpen = PF.every((c, ci) => pfOpen['c' + ci]);
-    const pf = { none: !adOn, has: adOn, connect: () => { set({ disc: { ...disc, ad: false }, ws: s.ws === 1 ? 0 : s.ws }); say('Ad Account terhubung', 'act_2049381726 · Kopi Senja Ads'); }, rows: pfRows,
+    // Mode backend: tabel tampil bila ada data iklan. Sinkronisasi spend dari Ad Account belum ada (sementara lewat seed).
+    const pfHas = BE ? PF.length > 0 : adOn;
+    const pf = { none: !pfHas, has: pfHas, connect: () => { if (BE) { say('Sinkronisasi Ad Account belum tersedia', 'Data performa muncul setelah ada lead dari iklan'); return; } set({ disc: { ...disc, ad: false }, ws: s.ws === 1 ? 0 : s.ws }); say('Ad Account terhubung', 'act_2049381726 · Kopi Senja Ads'); }, rows: pfRows,
       expandLabel: allOpen ? 'Ciutkan semua' : 'Buka semua', expandAll: () => { const o = {}; if (!allOpen) PF.forEach((c, ci) => { o['c' + ci] = true; c[1].forEach((_, si) => (o['c' + ci + 's' + si] = true)); }); set({ pfOpen: o }); },
       cols: [['Spend', 'spend'], ['Chat', 'chat'], ['Lead'], ['Purchase', 'purch'], ['Nilai', 'val'], ['CPL'], ['CPP'], ['ROAS', 'roas'], ['Conv.']].map(([label, key]) => ({ label: label + (key && pfSort === key ? ' ↓' : ''), sort: () => key && set({ pfSort: key }), style: { fontFamily: 'inherit', border: 'none', background: 'transparent', padding: 0, textAlign: 'right', fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', cursor: key ? 'pointer' : 'default', color: key && pfSort === key ? 'var(--text)' : 'var(--muted)' } })),
       lg1: pill('ok'), lg2: pill('soft'), lg3: pill('err') };
@@ -328,14 +414,17 @@ class Component extends DCLogic {
     const SRC = ['API', 'Manual', 'Otomatis', 'API', 'API', 'Otomatis', 'Manual'];
     const CODE = { Terkirim: '200', Gagal: '400', Retry: '429', Duplikat: '—', Kedaluwarsa: '400' };
     const lgov = s.lgOv || {};
-    const LOG = Array.from({ length: 28 }, (_, i) => { const ev = EV[i % 8]; return { i, ev, st: lgov[i] || ST[i % 12], src: SRC[i % 7], d: new Date(+NOW - (i * 47 + 5) * 60e3), value: ['Purchase', 'InitiateCheckout', 'AddToCart'].includes(ev) ? [450000, 1250000, 89000, 215000, 350000, 64000, 180000][i % 7] : 0, clid: clidOf(i + 40), id: 'evt_' + (90412 - i), order: 'order-' + (10482 - i) }; });
+    const LOG = BE ? EVR.map((e, i) => ({ i, ev: e.eventName, st: EST[e.status] || e.status, src: SRCL[e.source], d: new Date(e.createdAt), value: e.value, clid: e.ctwaClid || '—', id: e.eventId, order: '', rowId: e.id, dup: e.duplicates, error: e.error }))
+      : Array.from({ length: 28 }, (_, i) => { const ev = EV[i % 8]; return { i, ev, st: lgov[i] || ST[i % 12], src: SRC[i % 7], d: new Date(+NOW - (i * 47 + 5) * 60e3), value: ['Purchase', 'InitiateCheckout', 'AddToCart'].includes(ev) ? [450000, 1250000, 89000, 215000, 350000, 64000, 180000][i % 7] : 0, clid: clidOf(i + 40), id: 'evt_' + (90412 - i), order: 'order-' + (10482 - i) }; });
     const lgSt = s.lgSt || 'Semua', lgSrc = s.lgSrc || 'Semua';
-    const lgRows = LOG.filter((r) => (lgSt === 'Semua' || r.st === lgSt) && (lgSrc === 'Semua' || r.src === lgSrc));
+    // Mode backend: "Duplikat" = event yang pernah datang lagi dengan event_id sama (dilewati); retry otomatis baru ada di Fase 3.
+    const lgRows = LOG.filter((r) => (lgSt === 'Semua' || r.st === lgSt || (BE && lgSt === 'Duplikat' && r.dup > 0)) && (lgSrc === 'Semua' || r.src === lgSrc));
+    const openLog = (r) => { set({ lgOpen: r.i + 1, lgTab: 'payload' }); if (BE) this.loadDetail('event', r.rowId); };
     const lg = {
-      stChips: ['Semua', 'Terkirim', 'Gagal', 'Retry', 'Duplikat', 'Kedaluwarsa'].map((x) => ({ label: x, pick: () => set({ lgSt: x }), style: { ...chip(lgSt === x), height: 30, fontSize: 12 } })),
+      stChips: (BE ? ['Semua', 'Terkirim', 'Gagal', 'Duplikat', 'Kedaluwarsa'] : ['Semua', 'Terkirim', 'Gagal', 'Retry', 'Duplikat', 'Kedaluwarsa']).map((x) => ({ label: x, pick: () => set({ lgSt: x }), style: { ...chip(lgSt === x), height: 30, fontSize: 12 } })),
       srcChips: ['Semua', 'API', 'Manual', 'Otomatis'].map((x) => ({ label: x, pick: () => set({ lgSrc: x }), style: { ...chip(lgSrc === x), height: 30, fontSize: 12 } })),
-      rows: lgRows.map((r) => ({ time: tfmt(r.d), ev: r.ev, src: r.src, ss: SRCB, value: r.value ? rp(r.value) : '—', clidShort: r.clid.slice(0, 14) + '…', st: r.st, pill: pill(EVP[r.st], EVP[r.st] === 'neutral' && r.st === 'Kedaluwarsa' ? { textDecoration: 'line-through' } : {}), code: CODE[r.st], open: () => set({ lgOpen: r.i + 1, lgTab: 'payload' }), copyIcon: s.copied === 'c' + r.i ? ic.check : ic.copy, copy: (e) => { e.stopPropagation(); copy(r.clid, 'c' + r.i); } })),
-      count: lgRows.length + ' dari ' + LOG.length + ' event · 24 jam terakhir',
+      rows: lgRows.map((r) => ({ time: tfmt(r.d), ev: r.ev, src: r.src, ss: SRCB, value: r.value ? rp(r.value) : '—', clidShort: r.clid.length > 14 ? r.clid.slice(0, 14) + '…' : r.clid, st: r.st, pill: pill(EVP[r.st], EVP[r.st] === 'neutral' && r.st === 'Kedaluwarsa' ? { textDecoration: 'line-through' } : {}), code: CODE[r.st] || '—', open: () => openLog(r), copyIcon: s.copied === 'c' + r.i ? ic.check : ic.copy, copy: (e) => { e.stopPropagation(); copy(r.clid, 'c' + r.i); } })),
+      count: lgRows.length + ' dari ' + LOG.length + ' event · ' + (BE ? RG.hint : '24 jam terakhir'),
     };
     const le = s.lgOpen ? LOG[s.lgOpen - 1] : null;
     let lgd = { open: false };
@@ -346,14 +435,26 @@ class Component extends DCLogic {
       const EX = { Gagal: ['Nomor telepon pelanggan tidak valid', 'Meta menolak karena nomor kosong atau formatnya salah sebelum di-hash. Event ini tidak diulang otomatis.', ['Pastikan nomor diawali 62, tanpa spasi atau tanda +.', 'Perbaiki data kontak, lalu klik Kirim ulang.']], Retry: ['Meta sedang membatasi permintaan', 'Terlalu banyak event dalam waktu singkat. Convera mencoba lagi otomatis — kamu tidak perlu melakukan apa-apa.', ['Percobaan berikutnya dalam ±2 menit (3 dari 5).']], Kedaluwarsa: ['Lewat batas 7 hari sejak klik iklan', 'Meta hanya menerima konversi CTWA maksimal 7 hari setelah klik. Event ini tidak bisa dikirim ulang.', ['Tandai Purchase lebih cepat dari halaman Leads.', 'Aktifkan Aturan Otomatis agar closing tercatat seketika.']], Duplikat: ['Event yang sama sudah pernah dikirim', 'event_id ini sudah terkirim sebelumnya, jadi dilewati agar konversi tidak dihitung dua kali.', ['Tidak perlu tindakan.']] }[le.st];
       const t0 = String(le.d.getHours()).padStart(2, '0') + ':' + String(le.d.getMinutes()).padStart(2, '0');
       const RET = { Terkirim: [[t0 + ':04', '200', 'Diterima Meta · events_received: 1']], Duplikat: [[t0 + ':02', '—', 'Dilewati — event_id ' + le.order + ' sudah terkirim']], Retry: [[t0 + ':03', '429', 'Rate limit dari Meta'], [t0 + ':33', '429', 'Rate limit dari Meta'], ['Terjadwal', '—', 'Percobaan 3/5 dalam 2 menit']], Gagal: [[t0 + ':03', '400', 'Invalid parameter: user_data.ph'], [t0 + ':35', '400', 'Invalid parameter: user_data.ph'], [t0 + ':58', '400', 'Dihentikan — error permanen']], Kedaluwarsa: [[t0 + ':02', '400', 'event_time lebih dari 7 hari']] }[le.st];
+      // Mode backend: payload, respons Meta, dan riwayat kirim asli dari server (dimuat saat panel dibuka).
+      const det = BE ? (SV.event || {})[le.rowId] : null;
+      const PAY = BE ? (det ? det.payload : { memuat: true }) : payload;
+      const RSP = BE ? (det ? det.response ?? { info: le.st === 'Kedaluwarsa' ? 'Tidak dikirim ke Meta' : 'Belum ada respons' } : { memuat: true }) : RESP[le.st];
+      const EXB = le.st === 'Gagal' ? ['Event gagal dikirim', le.error || 'Meta menolak event ini.', ['Periksa koneksi Meta di halaman Koneksi.', 'Perbaiki datanya, lalu klik Kirim ulang.']]
+        : le.dup ? ['Event yang sama pernah dikirim lagi', 'event_id ini datang ' + le.dup + '× lagi setelah terkirim, jadi dilewati agar konversi tidak dihitung dua kali.', ['Tidak perlu tindakan.']] : le.st === 'Kedaluwarsa' ? EX : null;
+      const EXF = BE ? EXB : EX;
+      const hms = (at) => new Date(at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const RTV = BE ? (!det ? [['', '—', 'Memuat…']] : det.history.length ? det.history.map((h) => [hms(h.at), h.status ? String(h.status) : '—', h.message]) : [['', '—', 'Belum ada percobaan kirim']]) : RET;
       const tab = s.lgTab || 'payload';
-      lgd = { open: true, close: () => set({ lgOpen: null }), id: le.id + ' · ' + le.order, ev: le.ev, st: le.st, pill: pill(EVP[le.st]),
+      lgd = { open: true, close: () => set({ lgOpen: null }), id: BE ? le.id : le.id + ' · ' + le.order, ev: le.ev, st: le.st, pill: pill(EVP[le.st]),
         tabs: [['payload', 'Payload'], ['respons', 'Respons Meta'], ['riwayat', 'Riwayat retry']].map(([k, label]) => ({ label, pick: () => set({ lgTab: k }), style: { fontFamily: 'inherit', height: 38, padding: 0, border: 'none', borderBottom: tab === k ? '2px solid var(--accent)' : '2px solid transparent', background: 'transparent', color: tab === k ? 'var(--text)' : 'var(--muted)', fontSize: 14, fontWeight: tab === k ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap' } })),
-        explain: !!EX, exTitle: EX ? EX[0] : '', exBody: EX ? EX[1] : '', tips: EX ? EX[2] : [],
+        explain: !!EXF, exTitle: EXF ? EXF[0] : '', exBody: EXF ? EXF[1] : '', tips: EXF ? EXF[2] : [],
         facts: [['WAKTU', tfmt(le.d) + ' WIB'], ['SUMBER', le.src], ['NILAI', le.value ? rp(le.value) : '—'], ['CTWA_CLID', le.clid]].map(([k, v]) => ({ k, v })),
-        tPre: tab !== 'riwayat', pre: JSON.stringify(tab === 'payload' ? payload : RESP[le.st], null, 2), tRetry: tab === 'riwayat',
-        retry: RET.map(([t, code, msg], k) => ({ t, code, msg, dot: { width: 10, height: 10, borderRadius: '50%', flex: 'none', marginTop: 4, background: k === RET.length - 1 ? 'var(--accent)' : 'var(--borderStrong)' } })),
+        tPre: tab !== 'riwayat', pre: JSON.stringify(tab === 'payload' ? PAY : RSP, null, 2), tRetry: tab === 'riwayat',
+        retry: RTV.map(([t, code, msg], k) => ({ t, code, msg, dot: { width: 10, height: 10, borderRadius: '50%', flex: 'none', marginTop: 4, background: k === RTV.length - 1 ? 'var(--accent)' : 'var(--borderStrong)' } })),
         canResend: le.st === 'Gagal' || le.st === 'Retry',         resend: async () => {
+          if (BE) { set({ lgOpen: null }); say('Mengirim ulang ' + le.ev + '…');
+            try { const r = await resendEvent(le.rowId); say(r.ok ? 'Event dikirim ulang' : 'Event gagal dikirim ulang', r.ok ? 'events_received: ' + (r.events_received ?? 1) : r.error); } catch (e) { say('Event gagal dikirim ulang', e.message); }
+            this.load(); return; }
           const eid = uid();
           set({ lgOv: { ...lgov, [le.i]: 'Mengirim' }, lgOpen: null });
           try {
@@ -374,7 +475,7 @@ class Component extends DCLogic {
     const ch2 = s.lpCh || { email: true, wa: true };
     const lp = { periods: LPP.map(([label], i) => ({ label, pick: () => set({ lpP: i }), style: chip(lpi === i) })), range: LPP[lpi][1] + ' · dibuat 17 Okt 2026, 14:40 WIB',
       kpis: [['Chat dari iklan', fmt(1284 * lpk), '+12,4%'], ['Purchase', fmt(186 * lpk), '+21,6%'], ['Nilai pembelian', rpS(84720000 * lpk), '+18,9%'], ['ROAS', '11,9×', '+1,4']].map(([label, value, delta]) => ({ label, value, delta: delta + ' vs periode lalu' })),
-      top: allAds.slice().sort((x, y) => y.a[5] / y.a[1] - x.a[5] / x.a[1]).slice(0, 3).map(({ a }, i) => ({ n: i + 1, name: a[0], purch: fmt(a[4] * lpk) + ' purchase', roas: roasT(a[5] / a[1]) })),
+      top: allAds.slice().sort((x, y) => roasA(y.a) - roasA(x.a)).slice(0, 3).map(({ a }, i) => ({ n: i + 1, name: a[0], purch: fmt(a[4] * lpk) + ' purchase', roas: roasT(roasA(a)) })),
       pdf: () => { const ok = printReport({ title: WS[s.ws][0], range: lp.range, kpis: lp.kpis, top: lp.top, note: 'Laporan dibuat otomatis oleh Convera.' }); say(ok ? 'Laporan PDF disiapkan' : 'Pop-up diblokir', ok ? 'Pilih “Simpan sebagai PDF” di dialog cetak' : 'Izinkan pop-up untuk mengunduh PDF'); }, csv: () => csv('convera-laporan.csv', ['iklan', 'kampanye', 'spend', 'chat', 'lead', 'purchase', 'nilai'], allAds.map(({ a, camp }) => [a[0], camp, a[1], a[2], a[3], a[4], a[5]])),
       sw: sw(s.lpOn ?? true, () => set({ lpOn: !(s.lpOn ?? true) })), channels: [['email', 'Email'], ['wa', 'WhatsApp']].map(([k, label]) => ({ label, pick: () => set({ lpCh: { ...ch2, [k]: !ch2[k] } }), style: chip(ch2[k]) })),
       to: s.lpTo ?? 'rizky@kopisenja.id, 0812-3456-7890', setTo: (e) => set({ lpTo: e.target.value }), day: s.lpDay || 'Senin', setDay: (e) => set({ lpDay: e.target.value }), hour: s.lpHour || '08.00 WIB', setHour: (e) => set({ lpHour: e.target.value }),
@@ -472,7 +573,9 @@ class Component extends DCLogic {
       sessions: sess.map(([icon, device, meta, current], i) => ({ icon, device, meta, current, other: !current, ps: pill('soft'), out: () => set({ sessOut: { ...(s.sessOut || {}), [i + 1]: true } }) })),
       audit: [['17 Okt, 14:32', 'Dina (CS)', 'Menandai Purchase Rp 89.000 · Dewi Lestari', '103.47.12.8'], ['17 Okt, 12:31', 'Sistem', 'WhatsApp +62 812-•••-7890 terputus', '—'], ['16 Okt, 20:10', 'Arif (Admin)', 'Mengubah aturan “Sudah transfer → Purchase”', '36.72.4.19'], ['16 Okt, 09:02', 'Rizky (Owner)', 'Mengundang ads@lumbungdigital.id sebagai Viewer', '103.47.12.8'], ['15 Okt, 18:44', 'Rizky (Owner)', 'Membuat API key “Google Sheets sync”', '103.47.12.8'], ['14 Okt, 08:15', 'Arif (Admin)', 'Mengganti access token Meta', '36.72.4.19']].map(([t, who, what, ip]) => ({ t, who, what, ip })),
       exportAll: () => { downloadJson('convera-export-' + new Date().toISOString().slice(0, 10) + '.json', { exported_at: new Date().toISOString(), workspace: WS[s.ws][0], leads: LEADS.map((l) => ({ id: l.id, name: l.name, phone: l.phone, campaign: l.A ? l.A.camp : null, ad: l.A ? l.A.name : null, first_message: l.msg, status: l.status, value: l.value, events: l.events })), manual_events: s.kvNew || [], rules: s.rulesList || null, settings: { default_event: s.defEv || 'Purchase', default_value: s.defVal ?? '150.000', retention: s.retention || '90 hari' } }); say('Data diekspor', 'File JSON sudah diunduh'); },
-      delPhone: s.delPhone || '', setDelPhone: (e) => set({ delPhone: e.target.value }), delContact: () => { const ph = normPhone(s.delPhone || ''); if (ph.length < 9) { say('Isi nomor terlebih dahulu', 'Contoh: 0812-3456-7890'); return; } const found = LEADS.filter((l) => normPhone(l.phone) === ph).length; if (!found) { say('Nomor tidak ditemukan', 'Tidak ada lead dengan nomor ini'); return; } set({ delPhone: '', delPhones: [...(s.delPhones || []), ph], kvNew: (s.kvNew || []).filter((e) => normPhone(e.phone) !== ph) }); say('Data kontak dihapus', found + ' lead & riwayat chat dihapus permanen'); },
+      delPhone: s.delPhone || '', setDelPhone: (e) => set({ delPhone: e.target.value }), delContact: () => { const ph = normPhone(s.delPhone || ''); if (ph.length < 9) { say('Isi nomor terlebih dahulu', 'Contoh: 0812-3456-7890'); return; }
+        if (BE) { forgetContact(ph).then((r) => { set({ delPhone: '' }); say('Data kontak dihapus', r.deleted + ' lead & riwayat event dihapus permanen'); this.load(); }).catch((e) => say(e.status === 404 ? 'Nomor tidak ditemukan' : 'Gagal menghapus', e.status === 404 ? 'Tidak ada lead dengan nomor ini' : e.message)); return; }
+        const found = LEADS.filter((l) => normPhone(l.phone) === ph).length; if (!found) { say('Nomor tidak ditemukan', 'Tidak ada lead dengan nomor ini'); return; } set({ delPhone: '', delPhones: [...(s.delPhones || []), ph], kvNew: (s.kvNew || []).filter((e) => normPhone(e.phone) !== ph) }); say('Data kontak dihapus', found + ' lead & riwayat chat dihapus permanen'); },
       delName: s.delName || '', setDelName: (e) => set({ delName: e.target.value }), delStyle: { ...BTN, height: 44, background: '#fff', color: '#b8530f', opacity: delOk ? 1 : 0.5, cursor: delOk ? 'pointer' : 'not-allowed' },
       delWs: () => { if (!delOk) return; set({ delName: '', wsDelAt: Date.now() + 864e5 }); say('Permintaan hapus diterima', 'Workspace dihapus dalam 24 jam — bisa dibatalkan lewat email'); },
     };
@@ -618,7 +721,8 @@ class Component extends DCLogic {
       style: { fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', textAlign: 'left', background: w.i === s.ws ? 'var(--surface2)' : 'transparent' } }));
     const menu = (m) => () => this.setState({ menu: s.menu === m ? null : m });
     const PRE = [['Hari ini', '17 Okt'], ['Kemarin', '16 Okt'], ['7 hari terakhir', '11–17 Okt'], ['30 hari terakhir', '18 Sep–17 Okt'], ['Bulan ini', '1–17 Okt'], ['Bulan lalu', 'Sep 2026']];
-    const presets = PRE.map(([label, hint], i) => ({ label, hint, pick: () => this.setState({ range: i, menu: null }), style: { fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 13, fontWeight: i === s.range ? 700 : 500, background: i === s.range ? 'var(--accentSoft)' : 'transparent', color: i === s.range ? 'var(--accentText)' : 'var(--text)' } }));
+    if (appConfig.backendEnabled) PRE.forEach((p, i) => (p[1] = rangeOf(i).hint));
+    const presets = PRE.map(([label, hint], i) => ({ label, hint, pick: () => this.setState({ range: i, menu: null }, () => this.load()), style: { fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 13, fontWeight: i === s.range ? 700 : 500, background: i === s.range ? 'var(--accentSoft)' : 'transparent', color: i === s.range ? 'var(--accentText)' : 'var(--text)' } }));
     const NOT = [['err', 'alert', 'WhatsApp +62 812-•••-7890 terputus. Event dari nomor ini ditahan.', '2 jam lalu'], ['warn', 'clock', 'Token Meta kedaluwarsa dalam 5 hari.', '5 jam lalu'], ['ok', 'bag', '48 Purchase terkirim kemarin · Rp 21.300.000', 'Kemarin, 08.00'], ['info', 'users', 'Dina (CS) bergabung ke workspace Kopi Senja.', '2 hari lalu']];
     const tone = { err: ['var(--errBg)', 'var(--errFg)'], warn: ['var(--warnBg)', 'var(--warnFg)'], ok: ['var(--okBg)', 'var(--okFg)'], info: ['var(--neutral)', 'var(--text)'] };
     const notifs = NOT.map(([t, i, title, time], k) => ({ title, time, icon: ic[i], unread: !s.read && k < 3,
